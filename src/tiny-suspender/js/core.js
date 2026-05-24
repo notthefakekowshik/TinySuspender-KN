@@ -323,7 +323,7 @@ class TinySuspenderCore {
           this.chrome.tabs.sendMessage(tabId, {command: 'ts_get_tab_state'}, (response) => {
             this.log('>> ts_get_tab_state', response);
             // suppress chrome.runtime.lastError; missing content script is expected on many pages
-            void chrome.runtime.lastError;
+            void this.chrome.runtime.lastError;
             
             let state = 'suspendable:auto';
             if (this.idleTimeMinutes == 0) {
@@ -384,7 +384,7 @@ class TinySuspenderCore {
     return new Promise((resolve, reject) => {
       // First check if this tab exists and get its info
       this.chrome.tabs.get(tabId, (tab) => {
-        if (chrome.runtime.lastError || !tab) {
+        if (this.chrome.runtime.lastError || !tab) {
           resolve({ x: 0, y: 0 });
           return;
         }
@@ -405,8 +405,8 @@ class TinySuspenderCore {
         // Ask content script for current scroll position
         this.chrome.tabs.sendMessage(tabId, { command: 'ts_get_tab_scroll' }, {}, (response) => {
           clearTimeout(timer);
-          
-          if (chrome.runtime.lastError) {
+
+          if (this.chrome.runtime.lastError) {
             resolve({ x: 0, y: 0 });
           } else {
             resolve(response?.scroll || { x: 0, y: 0 });
