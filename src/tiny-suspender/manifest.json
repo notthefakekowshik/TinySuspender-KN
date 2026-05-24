@@ -27,11 +27,11 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["suspend.html", "popup.html", "settings.html", "css/*", "js/*", "img/*/*", "img/*"],
+      "resources": ["suspend.html"],
       "matches": ["<all_urls>"]
     }
   ],
-  "permissions": ["activeTab", "tabs", "contextMenus", "storage", "alarms"],
+  "permissions": ["tabs", "contextMenus", "storage", "alarms"],
   "incognito": "split",
   "commands": {
     "suspend-active-tab": {

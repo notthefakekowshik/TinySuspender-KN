@@ -467,8 +467,7 @@ class TinySuspenderCore {
          + '&title=' + encodeURIComponent(tab.title)
          + '&favIconUrl=' + encodeURIComponent(tab.favIconUrl)
          + '&scroll_x=' + encodeURIComponent(scroll.x)
-         + '&scroll_y=' + encodeURIComponent(scroll.y)
-         + '&dark_mode=' + encodeURIComponent(this.darkMode);
+         + '&scroll_y=' + encodeURIComponent(scroll.y);
   }
 
   doSuspend(tabId, guard) {
@@ -574,7 +573,6 @@ class TinySuspenderCore {
         active: false,
         url: 'suspend.html?url=' + encodeURIComponent(info.linkUrl)
         + '&title=' + encodeURIComponent(info.linkUrl)
-        + '&dark_mode=' + encodeURIComponent(this.darkMode)
       });
     }
     else {
