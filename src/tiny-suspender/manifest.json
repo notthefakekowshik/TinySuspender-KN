@@ -5,7 +5,7 @@
   "author": "Arif Widi Nugroho",
   "short_name": "Tiny Suspender",
   "description": "Unload / suspend / hibernate idle tabs to reduce memory and cpu usage.",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "options_page": "settings.html",
   "action": {
     "default_title": "Tiny Suspender",
@@ -19,33 +19,19 @@
   "background": {
     "service_worker": "js/core.js"
   },
-  "content_scripts": [{
-    "matches": ["*://*/*"],
-    "js": [
-      "js/content.js"
-    ]
-  }],
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["js/content.js"]
+    }
+  ],
   "web_accessible_resources": [
     {
-      "resources" : [
-        "suspend.html",
-        "popup.html",
-        "settings.html",
-        "css/*",
-        "js/*",
-        "img/*/*",
-        "img/*"
-      ],
+      "resources": ["suspend.html", "popup.html", "settings.html", "css/*", "js/*", "img/*/*", "img/*"],
       "matches": ["<all_urls>"]
     }
   ],
-  "permissions": [
-    "activeTab",
-    "tabs",
-    "contextMenus",
-    "storage",
-    "alarms"
-  ],
+  "permissions": ["activeTab", "tabs", "contextMenus", "storage", "alarms"],
   "incognito": "split",
   "commands": {
     "suspend-active-tab": {
@@ -96,4 +82,4 @@
     "128": "img/icon-128.png",
     "256": "img/icon-256.png"
   }
-} 
+}

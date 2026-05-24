@@ -1,7 +1,7 @@
 class TinySuspenderCore {
 
   constructor() {
-    this.debug = true;
+    this.debug = false;
     this.log('start');
     this.chrome = null;
 
@@ -85,6 +85,7 @@ class TinySuspenderCore {
     this.chrome.tabs.onUpdated.addListener(this.onTabUpdated.bind(this));
     this.chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
     this.chrome.tabs.onRemoved.addListener(this.onTabRemoved.bind(this));
+    this.chrome.tabs.onCreated.addListener(this.onTabCreated.bind(this));
     this.chrome.runtime.onInstalled.addListener(this.onPluginInstalled.bind(this));
     this.chrome.contextMenus.onClicked.addListener(this.onContextMenuClickHandler.bind(this));
     this.chrome.commands.onCommand.addListener(this.onCommand.bind(this));
@@ -289,7 +290,7 @@ class TinySuspenderCore {
             return;
           }
         } catch (error) {
-          console.log(error);
+          this.log(error);
           resolve({state: 'nonsuspendible:system_page'});
           return;
         }
@@ -316,10 +317,9 @@ class TinySuspenderCore {
         // Content script may prevent autosuspension if the user has unsaved form data
         const getTabState = (tabId, tab, resolve) => {
           this.chrome.tabs.sendMessage(tabId, {command: 'ts_get_tab_state'}, (response) => {
-            console.log('>> ts_get_tab_state', response);
-            if (chrome.runtime.lastError) {
-              // console.log('chrome.runtime.lastError', tab.title, chrome.runtime.lastError)
-            }
+            this.log('>> ts_get_tab_state', response);
+            // suppress chrome.runtime.lastError; missing content script is expected on many pages
+            void chrome.runtime.lastError;
             
             let state = 'suspendable:auto';
             if (this.idleTimeMinutes == 0) {
@@ -440,25 +440,14 @@ class TinySuspenderCore {
   }
 
   initTimersForBackgroundTabs() {
-    this.log('initTimersForBackgroundTabs')
+    this.log('initTimersForBackgroundTabs');
     this.readSettings()
       .then((settings) => {
         if (settings.idleTimeMinutes == 0) return;
+        // The alarm handler re-checks isAutoSuspendable when it fires, so we don't
+        // need to query each tab's state here — just ensure an alarm exists.
         this.chrome.tabs.query({ active: false }, (tabs) => {
-          tabs.forEach((tab) => {
-            let tabId = tab.id;
-            let alarmName = `${tabId}`;
-            this.getTabState(tabId)
-              .then((state) => {
-                if (this.isAutoSuspendable(state.state)) {
-                  this.chrome.alarms.get(alarmName, (alarm) => {
-                    if (alarm) return;
-                    this.createTabAutosuspensionTimer(tab.id);
-                  });
-                }
-              })
-              .catch((error) => {});
-          });
+          tabs.forEach((tab) => this.ensureTabAutosuspensionTimer(tab.id));
         });
       })
       .catch((error) => {});
@@ -579,7 +568,7 @@ class TinySuspenderCore {
   }
 
   onContextMenuClickHandler(info, tab) {
-    console.log('context', info)
+    this.log('context', info);
     if (info.menuItemId === 'context-link') {
       this.chrome.tabs.create({
         active: false,
@@ -661,19 +650,23 @@ class TinySuspenderCore {
   }
 
   onTabUpdated(tabId, changeInfo, tab) {
+    if (changeInfo.status === 'complete' && this.shouldTabScrollToPosition(tabId)) {
+      this.scrollTabToPosition(tabId);
+    }
+
+    // Only refresh the icon for the active tab, and only on changes that can flip state.
+    const stateRelevant = changeInfo.url !== undefined
+      || changeInfo.audible !== undefined
+      || changeInfo.pinned !== undefined
+      || changeInfo.discarded !== undefined
+      || changeInfo.status === 'complete';
+    if (!tab.active || !stateRelevant) return;
+
     this.getTabState(tabId)
       .then((state) => {
         this.setIconFromStateString(state.state, tabId);
       })
-      .catch((error) => {
-
-      });
-
-    if (changeInfo.status === 'complete') {
-      if (this.shouldTabScrollToPosition(tabId)) {
-        this.scrollTabToPosition(tabId);
-      }
-    }
+      .catch((error) => {});
   }
 
   onTabRemoved(tabId, removeInfo) {
@@ -685,6 +678,20 @@ class TinySuspenderCore {
     delete this.tabScrolls[tabId];
   }
 
+  onTabCreated(tab) {
+    if (this.idleTimeMinutes == 0) return;
+    if (tab.active) return;
+    this.ensureTabAutosuspensionTimer(tab.id);
+  }
+
+  ensureTabAutosuspensionTimer(tabId) {
+    let alarmName = `${tabId}`;
+    this.chrome.alarms.get(alarmName, (alarm) => {
+      if (alarm) return;
+      this.createTabAutosuspensionTimer(tabId);
+    });
+  }
+
   onTabActivated(activeInfo) {
     let tabId = activeInfo.tabId;
     this.getTabState(tabId)
@@ -694,13 +701,13 @@ class TinySuspenderCore {
           this.shouldAutorestore(tabId);
         }
       })
-      .catch((error) => {
+      .catch((error) => {});
 
-      });
-
-    // cancel timer
-    this.cancelTabAutosuspensionTimer(activeInfo.tabId);
-    this.initTimersForBackgroundTabs();
+    // The new active tab should not auto-suspend; the just-deactivated tab should.
+    this.cancelTabAutosuspensionTimer(tabId);
+    if (this.idleTimeMinutes > 0 && activeInfo.previousTabId) {
+      this.ensureTabAutosuspensionTimer(activeInfo.previousTabId);
+    }
   }
 
   suspend_tab(request, sender, sendResponse) {
@@ -757,13 +764,13 @@ class TinySuspenderCore {
   }
 
   disable_auto_suspension_domain(request, sender, sendResponse) {
-    console.log('disable_auto_suspension_domain', request.domain)
+    this.log('disable_auto_suspension_domain', request.domain);
     this.excludedDomains[request.domain] = true;
     this.saveState();
   }
 
   enable_auto_suspension_domain(request, sender, sendResponse) {
-    console.log('enable_auto_suspension_domain', request.domain)
+    this.log('enable_auto_suspension_domain', request.domain);
     if (this.excludedDomains[request.domain]) {
       delete this.excludedDomains[request.domain];
       this.saveState();

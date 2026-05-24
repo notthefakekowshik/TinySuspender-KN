@@ -1,7 +1,7 @@
 class TinySuspenderContent {
 
   constructor() {
-    this.debug = true;
+    this.debug = false;
     this.chrome = null;
     this.formUpdated = false;
   }
@@ -18,24 +18,14 @@ class TinySuspenderContent {
   initEventHandlers() {
     this.chrome.runtime.onMessage.addListener(this.eventHandler.bind(this));
 
-    setTimeout(this.initFormListener.bind(this), 500);
-    setInterval(this.initFormListener.bind(this), 60000);
-
-    window.onfocus = this.initFormListener.bind(this);
-  }
-
-  initFormListener() {
-    let inputs = document.querySelectorAll('input');
-    for (let i = 0; i < inputs.length; i++) {
-      let input = inputs[i];
-      input.onchange = this.formDataChanged.bind(this);
-    }
-
-    let textareas = document.querySelectorAll('textarea');
-    for (let i = 0; i < textareas.length; i++) {
-      let input = textareas[i];
-      input.onchange = this.formDataChanged.bind(this);
-    }
+    // capture-phase listener catches input/textarea changes once, including dynamically added elements,
+    // without overwriting any onchange handlers the page itself sets.
+    document.addEventListener('change', (e) => {
+      let t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+        this.formDataChanged();
+      }
+    }, true);
   }
 
   eventHandler(request, sender, sendResponse) {
@@ -51,9 +41,10 @@ class TinySuspenderContent {
   }
 
   formDataChanged() {
+    if (this.formUpdated) return;
     this.formUpdated = true;
     this.chrome.runtime.sendMessage({command: "ts_update_tab_icon", state: this.get_current_state()}, (response) => {
-      
+
     });
   }
 

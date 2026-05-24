@@ -77,7 +77,6 @@ if (darkMode) {
 }
 
 chrome.storage.onChanged.addListener((changes, namespace) => {
-  console.log(changes, namespace)
   if (changes.dark_mode && changes.dark_mode.newValue) {
     document.body.classList.add('dark-mode');
   }

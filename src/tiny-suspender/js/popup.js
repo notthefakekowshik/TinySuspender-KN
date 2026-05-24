@@ -1,6 +1,6 @@
 class TinySuspenderPopup {
   constructor() {
-    this.debug = true;
+    this.debug = false;
     this.chrome = null;
     this.state = null;
     this.idleTimeMinutes = 30;
