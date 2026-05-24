@@ -71,8 +71,8 @@ class TinySuspenderCore {
           }
         }
       }
+      this.saveState();
     });
-    this.saveState();
   }
 
   setChrome(chrome) {
@@ -84,14 +84,29 @@ class TinySuspenderCore {
 
     this.chrome.tabs.onUpdated.addListener(this.onTabUpdated.bind(this));
     this.chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
+    this.chrome.tabs.onRemoved.addListener(this.onTabRemoved.bind(this));
     this.chrome.runtime.onInstalled.addListener(this.onPluginInstalled.bind(this));
     this.chrome.contextMenus.onClicked.addListener(this.onContextMenuClickHandler.bind(this));
     this.chrome.commands.onCommand.addListener(this.onCommand.bind(this));
 
     this.readSettings();
     this.chrome.storage.onChanged.addListener((changes, namespace) => {
+      if (namespace !== 'sync') return;
+
+      const timerKeys = [
+        'idleTimeMinutes',
+        'skip_audible',
+        'skip_pinned',
+        'skip_when_offline',
+        'whitelist',
+        'enable_tab_discard'
+      ];
+      const affectsTimers = timerKeys.some((key) => key in changes);
+
       this.readSettings();
-      this.resetAutoSuspensionTimers();
+      if (affectsTimers) {
+        this.resetAutoSuspensionTimers();
+      }
     });
     this.chrome.alarms.onAlarm.addListener(this.onAlarm.bind(this));
     this.initTimersForBackgroundTabs();
@@ -137,8 +152,8 @@ class TinySuspenderCore {
           idleTimeMinutes: this.idleTimeMinutes,
           whitelist: this.whitelist,
           autorestore: this.autorestore,
-          skipAudible: this.skip_audible,
-          skipPinned: this.skip_pinned,
+          skipAudible: this.skipAudible,
+          skipPinned: this.skipPinned,
           skipWhenOffline: this.skipWhenOffline,
           enableTabDiscard: this.enableTabDiscard,
           darkMode: this.darkMode
@@ -212,14 +227,17 @@ class TinySuspenderCore {
     const stateToIconMap = {
       'suspended:suspended': 'normal',
       'suspendable:auto': 'green',
+      'suspendable:auto_disabled': 'yellow',
       'suspendable:form_changed': 'yellow',
       'suspendable:audible': 'yellow',
       'suspendable:pinned': 'yellow',
+      'suspendable:offline': 'yellow',
       'suspendable:tab_whitelist': 'yellow',
       'suspendable:url_whitelist': 'yellow',
       'suspendable:domain_whitelist': 'yellow',
       'nonsuspendible:temporary_disabled': 'yellow',
       'nonsuspendible:system_page': 'gray',
+      'nonsuspendible:discarded': 'normal',
       'nonsuspendible:not_running': 'red',
       'nonsuspendible:error': 'red'
     };
@@ -455,7 +473,16 @@ class TinySuspenderCore {
     });
   }
 
-  suspendTab(tabId) {
+  buildSuspendUrl(tab, scroll) {
+    return 'suspend.html?url=' + encodeURIComponent(tab.url)
+         + '&title=' + encodeURIComponent(tab.title)
+         + '&favIconUrl=' + encodeURIComponent(tab.favIconUrl)
+         + '&scroll_x=' + encodeURIComponent(scroll.x)
+         + '&scroll_y=' + encodeURIComponent(scroll.y)
+         + '&dark_mode=' + encodeURIComponent(this.darkMode);
+  }
+
+  doSuspend(tabId, guard) {
     let tabState;
     this.getTabState(tabId)
       .then((state) => {
@@ -463,32 +490,28 @@ class TinySuspenderCore {
         return this.getTabScroll(tabId);
       })
       .then((scroll) => {
-        let state = tabState;
-        if (this.isSuspendable(state.state)) {
-          this.chrome.tabs.get(tabId, (tab) => {
-            if (this.enableTabDiscard) {
-              chrome.tabs.discard(tab.id);
-            }
-            else if (tab.discarded) {
-              // do nothing
-              this.log('this tab is already suspended via native tab discard: ', tab.id);
-            }
-            else {
-              this.chrome.tabs.update(tab.id, {
-                url: 'suspend.html?url=' + encodeURIComponent(tab.url)
-                   + '&title=' + encodeURIComponent(tab.title)
-                   + '&favIconUrl=' + encodeURIComponent(tab.favIconUrl)
-                   + '&scroll_x=' + encodeURIComponent(scroll.x)
-                   + '&scroll_y=' + encodeURIComponent(scroll.y)
-                   + '&dark_mode=' + encodeURIComponent(this.darkMode)
-              });
-            }
-          });
-        }
+        if (!guard(tabState.state)) return;
+        this.chrome.tabs.get(tabId, (tab) => {
+          if (this.enableTabDiscard) {
+            this.chrome.tabs.discard(tab.id);
+          }
+          else if (tab.discarded) {
+            this.log('this tab is already suspended via native tab discard: ', tab.id);
+          }
+          else {
+            this.chrome.tabs.update(tab.id, {url: this.buildSuspendUrl(tab, scroll)});
+          }
+        });
       })
-      .catch((error) => {
+      .catch((error) => {});
+  }
 
-      });
+  suspendTab(tabId) {
+    this.doSuspend(tabId, this.isSuspendable.bind(this));
+  }
+
+  autoSuspendTab(tabId) {
+    this.doSuspend(tabId, this.isAutoSuspendable.bind(this));
   }
 
   restoreTab(tabId) {
@@ -501,42 +524,6 @@ class TinySuspenderCore {
         this.chrome.tabs.update(tab.id, {url: pageUrl});
       }
     });
-  }
-
-  autoSuspendTab(tabId) {
-    let tabState;
-    this.getTabState(tabId)
-      .then((state) => {
-        tabState = state;
-        return this.getTabScroll(tabId);
-      })
-      .then((scroll) => {
-        let state = tabState;
-        if (this.isAutoSuspendable(state.state)) {
-          this.chrome.tabs.get(tabId, (tab) => {
-            if (this.enableTabDiscard) {
-              chrome.tabs.discard(tab.id);
-            }
-            else if (tab.discarded) {
-              // do nothing
-              this.log('this tab is already suspended via native tab discard: ', tab.id);
-            }
-            else {
-              this.chrome.tabs.update(tab.id, {
-                url: 'suspend.html?url=' + encodeURIComponent(tab.url)
-                   + '&title=' + encodeURIComponent(tab.title)
-                   + '&favIconUrl=' + encodeURIComponent(tab.favIconUrl)
-                   + '&scroll_x=' + encodeURIComponent(scroll.x)
-                   + '&scroll_y=' + encodeURIComponent(scroll.y)
-                   + '&dark_mode=' + encodeURIComponent(this.darkMode)
-              });
-            }
-          });
-        }
-      })
-      .catch((error) => {
-
-      });
   }
 
   shouldAutorestore(tabId) {
@@ -689,6 +676,15 @@ class TinySuspenderCore {
     }
   }
 
+  onTabRemoved(tabId, removeInfo) {
+    this.cancelTabAutosuspensionTimer(tabId);
+    if (this.tabState[tabId]) {
+      delete this.tabState[tabId];
+      this.saveState();
+    }
+    delete this.tabScrolls[tabId];
+  }
+
   onTabActivated(activeInfo) {
     let tabId = activeInfo.tabId;
     this.getTabState(tabId)
@@ -732,7 +728,7 @@ class TinySuspenderCore {
         this.setIconFromStateString(state.state, request.tabId);
       })
       .catch((error) => {
-
+        sendResponse({state: 'nonsuspendible:error'});
       });
       return true;
     }

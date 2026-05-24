@@ -78,284 +78,123 @@ class TinySuspenderPopup {
   }
 
   updateStatusFromState(state) {
+    const ALL_BUTTONS = [
+      'suspend-btn', 'suspend-all-btn', 'suspend-all-windows-btn', 'suspend-others-btn',
+      'restore-btn', 'restore-all-btn', 'restore-all-windows-btn',
+      'disable-tab-auto-suspend-btn', 'enable-tab-auto-suspend-btn',
+      'disable-tab-auto-suspend-domain-btn', 'enable-tab-auto-suspend-domain-btn',
+      'add-to-whitelist-btn'
+    ];
+    const RESTORE_ALL = ['restore-all-btn', 'restore-all-windows-btn'];
+    const SUSPEND_ALL = ['suspend-all-btn', 'suspend-all-windows-btn', 'suspend-others-btn'];
+    const SUSPENDABLE_BASE = ['suspend-btn', ...SUSPEND_ALL, ...RESTORE_ALL, 'add-to-whitelist-btn'];
+    const INACTIVE_BASE = [...SUSPEND_ALL, ...RESTORE_ALL, 'add-to-whitelist-btn'];
 
-    let setColor = (color) => {
-      let statusText = document.querySelector('#status_text');
-      statusText.classList.remove('red');
-      statusText.classList.remove('yellow');
-      statusText.classList.remove('blue');
-      if (color) {
-        statusText.classList.add(color);
+    const STATE_UI = {
+      'suspended:suspended': {
+        text: 'This tab is currently suspended.',
+        color: null,
+        show: ['restore-btn', ...RESTORE_ALL]
+      },
+      'suspendable:auto': {
+        text: `This tab will be suspended automatically after ${this.idleTimeMinutes} minutes in the background.`,
+        color: 'blue',
+        show: [...SUSPENDABLE_BASE, 'disable-tab-auto-suspend-btn', 'disable-tab-auto-suspend-domain-btn']
+      },
+      'suspendable:auto_disabled': {
+        text: 'This tab will not be suspended automatically since automatic suspension is disabled.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
+      'suspendable:form_changed': {
+        text: 'This tab will not be suspended automatically since it may contains unsaved form data.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
+      'suspendable:audible': {
+        text: 'Audible tab will not be suspended automatically.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
+      'suspendable:pinned': {
+        text: 'Pinned tab will not be suspended automatically.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
+      'suspendable:offline': {
+        text: 'Network appears to be down. Tabs will not be suspended automatically.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
+      'suspendable:tab_whitelist': {
+        text: 'This tab will not be suspended automatically for now.',
+        color: 'yellow',
+        show: [...SUSPENDABLE_BASE, 'enable-tab-auto-suspend-btn']
+      },
+      'suspendable:url_whitelist': {
+        text: 'This url is whitelisted and will not be suspended automatically.',
+        color: 'yellow',
+        show: ['suspend-btn', ...SUSPEND_ALL, ...RESTORE_ALL]
+      },
+      'suspendable:domain_whitelist': {
+        text: 'This domain will not be suspended automatically for now.',
+        color: 'yellow',
+        show: [...SUSPENDABLE_BASE, 'enable-tab-auto-suspend-domain-btn']
+      },
+      'nonsuspendible:temporary_disabled': {
+        text: 'This tab will not be suspended automatically for now.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
+      'nonsuspendible:discarded': {
+        text: 'This tab is currently suspended via native tab discard.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
+      'nonsuspendible:system_page': {
+        text: 'System page cannot be suspended.',
+        color: 'gray',
+        show: [...SUSPEND_ALL, ...RESTORE_ALL]
+      },
+      'nonsuspendible:not_running': {
+        text: "Content script is not running. Reload the tab to make sure it's running.",
+        color: 'red',
+        show: INACTIVE_BASE
+      },
+      'nonsuspendible:error': {
+        text: 'Cannot suspend this page.',
+        color: 'red',
+        show: INACTIVE_BASE
       }
-    }
+    };
 
-    let statusText = '';
-    if (state === 'suspended:suspended') {
-      statusText = 'This tab is currently suspended.';
-      document.querySelector('.suspend-btn').style.display = 'none';
-      document.querySelector('.suspend-all-btn').style.display = 'none';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'none';
-      document.querySelector('.suspend-others-btn').style.display = 'none';
-      document.querySelector('.restore-btn').style.display = 'block';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'none';
-      setColor();
-    }
-    else if (state === 'suspendable:auto') {
-      statusText = `This tab will be suspended automatically after ${this.idleTimeMinutes} minutes in the background.`;
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'block';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'block';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('blue');
-    }
-    else if (state === 'suspendable:auto_disabled') {
-      statusText = 'This tab will not be suspended automatically since automatic suspension is disabled.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'suspendable:form_changed') {
-      statusText = 'This tab will not be suspended automatically since it may contains unsaved form data.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'suspendable:audible') {
-      statusText = 'Audible tab will not be suspended automatically.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'suspendable:pinned') {
-      statusText = 'Pinned tab will not be suspended automatically.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'suspendable:offline') {
-      statusText = 'Network appears to be down. Tabs will not be suspended automatically.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'suspendable:tab_whitelist') {
-      statusText = 'This tab will not be suspended automatically for now.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'suspendable:url_whitelist') {
-      statusText = 'This url is whitelisted and will not be suspended automatically.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'none';
-      setColor('yellow');
-    }
-    else if (state === 'suspendable:domain_whitelist') {
-      statusText = 'This domain will not be suspended automatically for now.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'block';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'nonsuspendible:temporary_disabled') {
-      statusText = 'This tab will not be suspended automatically for now.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'nonsuspendible:discarded') {
-      statusText = 'This tab is currently suspended via native tab discard.';
-      document.querySelector('.suspend-btn').style.display = 'block';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('yellow');
-    }
-    else if (state === 'nonsuspendible:system_page') {
-      statusText = 'System page cannot be suspended.';
-      document.querySelector('.suspend-btn').style.display = 'none';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'none';
-      setColor('gray');
-    }
-    else if (state === 'nonsuspendible:not_running') {
-      statusText = "Content script is not running. Reload the tab to make sure it's running.";
-      document.querySelector('.suspend-btn').style.display = 'none';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('red');
-    }
-    else if (state === 'nonsuspendible:error') {
-      statusText = "Cannot suspend this page.";
-      document.querySelector('.suspend-btn').style.display = 'none';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('red');
-    }
-    else {
-      statusText = "Unknown error occurs.";
-      document.querySelector('.suspend-btn').style.display = 'none';
-      document.querySelector('.suspend-all-btn').style.display = 'block';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'block';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'block';
-      document.querySelector('.restore-all-windows-btn').style.display = 'block';
-      document.querySelector('.disable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-btn').style.display = 'none';
-      document.querySelector('.disable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.enable-tab-auto-suspend-domain-btn').style.display = 'none';
-      document.querySelector('.add-to-whitelist-btn').style.display = 'block';
-      setColor('red');
-    }
-    document.querySelector('#status_text').textContent = statusText;
+    const ui = STATE_UI[state] || {
+      text: 'Unknown error occurs.',
+      color: 'red',
+      show: INACTIVE_BASE
+    };
 
+    let show = ui.show;
     if (this.enableTabDiscard) {
-      document.querySelector('.suspend-btn').style.display = 'none';
-      document.querySelector('.suspend-all-btn').style.display = 'none';
-      document.querySelector('.suspend-all-windows-btn').style.display = 'none';
-      document.querySelector('.suspend-others-btn').style.display = 'block';
+      show = show.filter((b) => b !== 'suspend-btn'
+        && b !== 'suspend-all-btn'
+        && b !== 'suspend-all-windows-btn'
+        && b !== 'restore-btn'
+        && b !== 'restore-all-btn'
+        && b !== 'restore-all-windows-btn');
+      if (!show.includes('suspend-others-btn')) show = [...show, 'suspend-others-btn'];
       document.querySelector('.suspend-others-btn').text = 'Suspend all background tabs';
-      document.querySelector('.restore-btn').style.display = 'none';
-      document.querySelector('.restore-all-btn').style.display = 'none';
-      document.querySelector('.restore-all-windows-btn').style.display = 'none';
     }
+
+    const visible = new Set(show);
+    ALL_BUTTONS.forEach((cls) => {
+      document.querySelector('.' + cls).style.display = visible.has(cls) ? 'block' : 'none';
+    });
+
+    const statusText = document.querySelector('#status_text');
+    statusText.classList.remove('red', 'yellow', 'blue', 'gray');
+    if (ui.color) statusText.classList.add(ui.color);
+    statusText.textContent = ui.text;
   }
 
   onSuspend(e) {
@@ -524,13 +363,12 @@ class TinySuspenderPopup {
         let pageUrl = `${url.origin}${url.pathname}`;
 
         this.chrome.storage.sync.get('whitelist', (items) => {
-          let whitelist = items.whitelist;
-          if (!whitelist) {
-            whitelist = '';
+          let whitelist = items.whitelist || '';
+          let entries = whitelist.split('\n').map(line => line.trim()).filter(Boolean);
+          if (!entries.includes(pageUrl)) {
+            entries.push(pageUrl);
           }
-
-          whitelist = `${whitelist}\n${pageUrl}`;
-          this.chrome.storage.sync.set({'whitelist': whitelist}, () => {
+          this.chrome.storage.sync.set({'whitelist': entries.join('\n')}, () => {
             setTimeout(() => {
               window.close();
             }, 100);
