@@ -20,6 +20,10 @@ class TinySuspenderCore {
     this.enableTabDiscard = false;
 
     this.darkMode = false;
+
+    // Tracks the first settings load so alarm-creating paths don't
+    // race with readSettings and use the constructor's default 30 min.
+    this.settingsReady = Promise.resolve();
   }
 
   log() {
@@ -90,7 +94,7 @@ class TinySuspenderCore {
     this.chrome.contextMenus.onClicked.addListener(this.onContextMenuClickHandler.bind(this));
     this.chrome.commands.onCommand.addListener(this.onCommand.bind(this));
 
-    this.readSettings();
+    this.settingsReady = this.readSettings();
     this.chrome.storage.onChanged.addListener((changes, namespace) => {
       if (namespace !== 'sync') return;
 
@@ -677,16 +681,21 @@ class TinySuspenderCore {
   }
 
   onTabCreated(tab) {
-    if (this.idleTimeMinutes == 0) return;
     if (tab.active) return;
     this.ensureTabAutosuspensionTimer(tab.id);
   }
 
   ensureTabAutosuspensionTimer(tabId) {
-    let alarmName = `${tabId}`;
-    this.chrome.alarms.get(alarmName, (alarm) => {
-      if (alarm) return;
-      this.createTabAutosuspensionTimer(tabId);
+    // Wait for the first settings load — without this gate, alarms created
+    // immediately after a service-worker wake use the constructor default
+    // (30 min) instead of the user's actual idleTimeMinutes.
+    this.settingsReady.then(() => {
+      if (this.idleTimeMinutes == 0) return;
+      let alarmName = `${tabId}`;
+      this.chrome.alarms.get(alarmName, (alarm) => {
+        if (alarm) return;
+        this.createTabAutosuspensionTimer(tabId);
+      });
     });
   }
 
@@ -701,11 +710,12 @@ class TinySuspenderCore {
       })
       .catch((error) => {});
 
-    // The new active tab should not auto-suspend; the just-deactivated tab should.
+    // The new active tab should not auto-suspend.
     this.cancelTabAutosuspensionTimer(tabId);
-    if (this.idleTimeMinutes > 0 && activeInfo.previousTabId) {
-      this.ensureTabAutosuspensionTimer(activeInfo.previousTabId);
-    }
+    // Chrome's onActivated doesn't tell us which tab was deactivated, so we
+    // ensure alarms for all background tabs. ensureTabAutosuspensionTimer is
+    // cheap on tabs that already have an alarm (one chrome.alarms.get call).
+    this.initTimersForBackgroundTabs();
   }
 
   suspend_tab(request, sender, sendResponse) {
