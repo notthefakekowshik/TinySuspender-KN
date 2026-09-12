@@ -111,6 +111,11 @@ class TinySuspenderPopup {
         color: 'yellow',
         show: SUSPENDABLE_BASE
       },
+      'suspendable:no_response': {
+        text: 'This tab did not respond in time and will not be suspended automatically.',
+        color: 'yellow',
+        show: SUSPENDABLE_BASE
+      },
       'suspendable:audible': {
         text: 'Audible tab will not be suspended automatically.',
         color: 'yellow',
@@ -425,7 +430,7 @@ if (this.chrome) {
 }
 
 try {
-  module.exports = ts;
+  module.exports = tsp;
 }
 catch (err) {
 

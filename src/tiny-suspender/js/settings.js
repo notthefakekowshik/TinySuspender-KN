@@ -78,8 +78,6 @@ let onSettingsSubmit = (e) => {
   let idleTimeMinutes = parseInt(document.querySelector('#config input[name=idle_time]').value);
   if (isNaN(idleTimeMinutes)) return;
 
-  idleTimeMinutes = idleTimeMinutes;
-
   let whitelist = document.querySelector('#config textarea[name=whitelist]').value;
   if (!whitelist) whitelist = '';
 

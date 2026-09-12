@@ -18,14 +18,25 @@ class TinySuspenderContent {
   initEventHandlers() {
     this.chrome.runtime.onMessage.addListener(this.eventHandler.bind(this));
 
-    // capture-phase listener catches input/textarea changes once, including dynamically added elements,
-    // without overwriting any onchange handlers the page itself sets.
-    document.addEventListener('change', (e) => {
-      let t = e.target;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) {
+    // Capture-phase listeners catch edits once, including on dynamically added
+    // elements, without overwriting any handlers the page itself sets.
+    // 'input' fires while typing (before blur), 'change' covers controls that
+    // only report on commit. Together they also cover contenteditable regions.
+    let onEdit = (e) => {
+      if (this.isFormField(e.target)) {
         this.formDataChanged();
       }
-    }, true);
+    };
+    document.addEventListener('input', onEdit, true);
+    document.addEventListener('change', onEdit, true);
+  }
+
+  isFormField(element) {
+    if (!element) return false;
+    if (element.isContentEditable) return true;
+
+    let tag = element.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
   }
 
   eventHandler(request, sender, sendResponse) {
@@ -90,7 +101,7 @@ if (this.chrome) {
 
 
 try {
-  module.exports = ts;
+  module.exports = tsc;
 }
 catch (err) {
 

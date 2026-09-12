@@ -60,6 +60,24 @@ class TinySuspenderCore {
     });
   }
 
+  scrollKey(tabId) {
+    return 'scroll_' + tabId;
+  }
+
+  // The scroll handoff is mirrored in storage.session: it only needs to survive
+  // until the restored page reports 'complete', but that window can outlast
+  // this service worker instance. Keys are per tab so concurrent restores
+  // never clobber each other.
+  saveTabScroll(tabId, scroll) {
+    this.tabScrolls[tabId] = scroll;
+    this.chrome.storage.session.set({[this.scrollKey(tabId)]: scroll});
+  }
+
+  clearTabScroll(tabId) {
+    delete this.tabScrolls[tabId];
+    this.chrome.storage.session.remove(this.scrollKey(tabId));
+  }
+
   trimState() {
     this.chrome.tabs.query({}, (tabs) => {
       let tabIds = {};
@@ -240,6 +258,7 @@ class TinySuspenderCore {
       'suspendable:tab_whitelist': 'yellow',
       'suspendable:url_whitelist': 'yellow',
       'suspendable:domain_whitelist': 'yellow',
+      'suspendable:no_response': 'yellow',
       'nonsuspendible:temporary_disabled': 'yellow',
       'nonsuspendible:system_page': 'gray',
       'nonsuspendible:discarded': 'normal',
@@ -310,10 +329,12 @@ class TinySuspenderCore {
           return;
         }
 
-        // if content script did not answer within 2 seconds, return state as 'suspendable:auto'
+        // If the content script did not answer within 2 seconds, assume the page
+        // may hold unsaved state that we could not detect and don't auto-suspend.
         let timer = setTimeout(() => {
           if (!answered) {
-            resolve({state: 'suspendable:auto'});
+            answered = true;
+            resolve({state: 'suspendable:no_response'});
           }
         }, 2000);
 
@@ -510,7 +531,10 @@ class TinySuspenderCore {
     this.chrome.tabs.get(tabId, (tab) => {
       let url = new URL(tab.url);
       if (url && url.protocol === 'chrome-extension:' && url.pathname === '/suspend.html') {
-        this.tabScrolls[tabId] = {x: url.searchParams.get('scroll_x'), y: url.searchParams.get('scroll_y')};
+        this.saveTabScroll(tabId, {
+          x: url.searchParams.get('scroll_x'),
+          y: url.searchParams.get('scroll_y')
+        });
 
         let pageUrl = url.searchParams.get('url');
         this.chrome.tabs.update(tab.id, {url: pageUrl});
@@ -524,18 +548,28 @@ class TinySuspenderCore {
     }
   }
 
-  shouldTabScrollToPosition(tabId) {
-    let scroll = this.tabScrolls[tabId];
-    if (scroll) {
-      return true;
-    }
-    return false;
-  }
-
   scrollTabToPosition(tabId) {
     let scroll = this.tabScrolls[tabId];
-    delete this.tabScrolls[tabId];
+    this.clearTabScroll(tabId);
     this.sendScrollCommand(tabId, scroll);
+  }
+
+  applySavedScroll(tabId) {
+    if (this.tabScrolls[tabId]) {
+      this.scrollTabToPosition(tabId);
+      return;
+    }
+
+    // The worker may have been torn down between tabs.update and this event,
+    // in which case the handoff only exists in storage.session.
+    let key = this.scrollKey(tabId);
+    this.chrome.storage.session.get([key], (items) => {
+      let scroll = items && items[key];
+      if (!scroll) return;
+
+      this.chrome.storage.session.remove(key);
+      this.sendScrollCommand(tabId, scroll);
+    });
   }
 
   sendScrollCommand(tabId, scroll) {
@@ -652,8 +686,8 @@ class TinySuspenderCore {
   }
 
   onTabUpdated(tabId, changeInfo, tab) {
-    if (changeInfo.status === 'complete' && this.shouldTabScrollToPosition(tabId)) {
-      this.scrollTabToPosition(tabId);
+    if (changeInfo.status === 'complete') {
+      this.applySavedScroll(tabId);
     }
 
     // Only refresh the icon for the active tab, and only on changes that can flip state.
@@ -677,7 +711,7 @@ class TinySuspenderCore {
       delete this.tabState[tabId];
       this.saveState();
     }
-    delete this.tabScrolls[tabId];
+    this.clearTabScroll(tabId);
   }
 
   onTabCreated(tab) {

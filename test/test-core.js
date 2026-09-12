@@ -52,3 +52,9 @@ test('isAutoSuspendable only matches the exact suspendable:auto state', () => {
   assert.strictEqual(ts.isAutoSuspendable('suspended:suspended'), false);
   assert.strictEqual(ts.isAutoSuspendable(null), false);
 });
+
+test('package.json version stays in sync with the extension manifest', () => {
+  const manifest = require('../src/tiny-suspender/manifest.json');
+  const pkg = require('../package.json');
+  assert.strictEqual(pkg.version, manifest.version);
+});

@@ -88,6 +88,7 @@ test('onTabRemoved cancels the tab\'s alarm and clears its tabState', async () =
   await flush();
 
   core.tabState[5] = {state: 'suspendable:tab_whitelist'};
+  core.saveTabScroll(5, {x: '1', y: '2'});
 
   mock.calls.alarmsClear.length = 0;
   mock.fire.onRemoved(5, {});
@@ -97,6 +98,10 @@ test('onTabRemoved cancels the tab\'s alarm and clears its tabState', async () =
     'closed tab\'s alarm should be cleared');
   assert.strictEqual(core.tabState[5], undefined,
     'closed tab\'s tabState entry should be dropped');
+  assert.strictEqual(core.tabScrolls[5], undefined,
+    'closed tab\'s scroll handoff entry should be dropped');
+  assert.strictEqual(mock.sessionStorage.scroll_5, undefined,
+    'closed tab\'s persisted scroll handoff should be removed');
 });
 
 test('local-namespace storage writes do not rebuild alarms', async () => {
@@ -135,6 +140,74 @@ test('sync-namespace change to idleTimeMinutes rebuilds alarms', async () => {
     'relevant sync key change should rebuild alarms');
 });
 
+test('scroll restore handoff is persisted and survives a service-worker restart', async () => {
+  // Regression: the tabId -> scroll handoff used to live only in this.tabScrolls.
+  // If the MV3 worker was torn down between tabs.update and the page reaching
+  // 'complete', the scroll position was silently dropped.
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
+  const suspendUrl = 'chrome-extension://test-extension-id/suspend.html'
+    + '?url=' + encodeURIComponent('https://example.com/')
+    + '&title=' + encodeURIComponent('Example')
+    + '&favIconUrl=&scroll_x=120&scroll_y=340';
+  mock.setTabs([{id: 7, active: true, url: suspendUrl, title: 'Example'}]);
+
+  let core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  core.restoreTab(7);
+  await flush();
+
+  assert.deepStrictEqual(core.tabScrolls[7], {x: '120', y: '340'});
+  assert.deepStrictEqual(mock.sessionStorage.scroll_7, {x: '120', y: '340'},
+    'scroll handoff should be written to storage.session');
+
+  // Simulate the worker being torn down and restarted before the page loads.
+  core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+  assert.strictEqual(core.tabScrolls[7], undefined,
+    'a restarted worker has no in-memory scroll state');
+
+  mock.calls.tabsSendMessage.length = 0;
+  core.onTabUpdated(7, {status: 'complete'}, {id: 7, active: false, url: suspendUrl});
+  await flush();
+
+  const scrollMessage = mock.calls.tabsSendMessage.find((c) => c.msg.command === 'ts_set_tab_scroll');
+  assert.ok(scrollMessage, 'scroll command should be sent once the page finishes loading');
+  assert.deepStrictEqual(scrollMessage.msg.scroll, {x: '120', y: '340'});
+  assert.strictEqual(mock.sessionStorage.scroll_7, undefined,
+    'consumed handoff should be removed from session storage');
+});
+
+test('getTabState refuses to auto-suspend when the content script does not answer', async (t) => {
+  // Regression: the 2s content-script timeout used to fall back to
+  // 'suspendable:auto', so a page that blocks its main thread could be
+  // suspended while holding form data we never got to detect.
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
+  mock.setTabs([{id: 3, active: false, url: 'https://slow.example.com/', title: 'Slow'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  // The content script never answers.
+  mock.chrome.tabs.sendMessage = () => {};
+
+  const pending = core.getTabState(3);
+  await flush();
+  t.mock.timers.tick(2000);
+  const state = await pending;
+
+  assert.strictEqual(state.state, 'suspendable:no_response');
+  assert.strictEqual(core.isAutoSuspendable(state.state), false,
+    'a tab that did not answer must not be auto-suspended');
+  assert.strictEqual(core.isSuspendable(state.state), true,
+    'manual suspension should still be possible');
+});
+
 test('icon contract: every documented state maps to its intended icon', async () => {
   // If you add a new state to getTabState, add it here too. Without this
   // contract, a forgotten state silently falls through to the 'red' default
@@ -151,6 +224,7 @@ test('icon contract: every documented state maps to its intended icon', async ()
     'suspendable:tab_whitelist':         'icon-yellow-38.png',
     'suspendable:url_whitelist':         'icon-yellow-38.png',
     'suspendable:domain_whitelist':      'icon-yellow-38.png',
+    'suspendable:no_response':           'icon-yellow-38.png',
     'nonsuspendible:temporary_disabled': 'icon-yellow-38.png',
     'nonsuspendible:system_page':        'icon-gray-38.png',
     'nonsuspendible:discarded':          'icon-default-38.png',

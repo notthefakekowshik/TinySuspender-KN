@@ -22,6 +22,7 @@ function pickKeys(obj, keys) {
 function makeChromeMock(initial = {}) {
   const syncStorage = { ...(initial.sync || {}) };
   const localStorage = { ...(initial.local || {}) };
+  const sessionStorage = { ...(initial.session || {}) };
   const alarms = new Map();
   const tabs = new Map();
 
@@ -43,6 +44,7 @@ function makeChromeMock(initial = {}) {
     alarmsCreate: [],
     alarmsClear: [],
     tabsUpdate: [],
+    tabsSendMessage: [],
     setIcon: [],
   };
 
@@ -73,6 +75,7 @@ function makeChromeMock(initial = {}) {
         if (cb) cb(t);
       },
       sendMessage: (id, msg, ...rest) => {
+        calls.tabsSendMessage.push({id, msg});
         const cb = rest.find((x) => typeof x === 'function');
         // Pretend no content script is listening; respond with undefined.
         if (cb) setImmediate(() => cb(undefined));
@@ -88,6 +91,14 @@ function makeChromeMock(initial = {}) {
       local: {
         get: (keys, cb) => setImmediate(() => cb(pickKeys(localStorage, keys))),
         set: (items, cb) => { Object.assign(localStorage, items); if (cb) cb(); },
+      },
+      session: {
+        get: (keys, cb) => setImmediate(() => cb(pickKeys(sessionStorage, keys))),
+        set: (items, cb) => { Object.assign(sessionStorage, items); if (cb) cb(); },
+        remove: (keys, cb) => {
+          (Array.isArray(keys) ? keys : [keys]).forEach((k) => { delete sessionStorage[k]; });
+          if (cb) cb();
+        },
       },
       onChanged: { addListener: hubs.onStorageChanged.addListener },
     },
@@ -136,6 +147,7 @@ function makeChromeMock(initial = {}) {
     },
     syncStorage,
     localStorage,
+    sessionStorage,
     alarms,
     calls,
   };

@@ -70,11 +70,14 @@ Suspender's State
        since automatic suspension is disable.
     - `form_changed`: Yellow icon. the page will NOT be suspended automatically.
       Manual suspension is still possible
+    - `no_response`: Yellow icon. the content script did not answer in time.
+      The page will NOT be suspended automatically. Manual suspension is still
+      possible
     - `audible`: Yellow icon. the page will NOT be suspended automatically.
       Manual suspension is still possible
     - `pinned`: Yellow icon. the page will NOT be suspended automatically.
       Manual suspension is still possible
-    - `offlise`: Yellow icon. The page will NOT be suspended automatically.
+    - `offline`: Yellow icon. The page will NOT be suspended automatically.
       Manual suspension is still possible
     - `tab_whitelist`: Yellow icon. the page will NOT be suspended automatically.
       Manual suspension is still possible

@@ -27,9 +27,9 @@ if (!pageUrl) {
 
 
 document.onclick = () => {
-    this.chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       tabs.forEach((tab) => {
-        this.chrome.runtime.sendMessage({command: "ts_restore_tab", tabId: tab.id});
+        chrome.runtime.sendMessage({command: "ts_restore_tab", tabId: tab.id});
       });
     });
 }
@@ -70,18 +70,3 @@ if (title) {
   document.title = title;
   document.querySelector('.title .description').textContent = title;
 }
-
-chrome.storage.sync.get('dark_mode', (items) => {
-  if (items.dark_mode) document.body.classList.add('dark-mode');
-});
-
-chrome.storage.onChanged.addListener((changes, namespace) => {
-  if (!changes.dark_mode) return;
-  if (changes.dark_mode.newValue) {
-    document.body.classList.add('dark-mode');
-  }
-  else {
-    document.body.classList.remove('dark-mode');
-  }
-});
-
