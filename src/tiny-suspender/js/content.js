@@ -4,6 +4,7 @@ class TinySuspenderContent {
     this.debug = false;
     this.chrome = null;
     this.formUpdated = false;
+    this.pageBusy = false;
   }
 
   log() {
@@ -29,6 +30,21 @@ class TinySuspenderContent {
     };
     document.addEventListener('input', onEdit, true);
     document.addEventListener('change', onEdit, true);
+
+    // page-agent.js (MAIN world) posts one busy boolean whenever the page
+    // starts or finishes work that must not be interrupted.
+    window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
+
+      let data = event.data;
+      if (!data || data.__tinySuspenderAgent !== true) return;
+
+      let busy = data.busy === true;
+      if (this.pageBusy === busy) return;
+
+      this.pageBusy = busy;
+      this.updateTabIcon();
+    });
   }
 
   isFormField(element) {
@@ -54,6 +70,10 @@ class TinySuspenderContent {
   formDataChanged() {
     if (this.formUpdated) return;
     this.formUpdated = true;
+    this.updateTabIcon();
+  }
+
+  updateTabIcon() {
     this.chrome.runtime.sendMessage({command: "ts_update_tab_icon", state: this.get_current_state()}, (response) => {
 
     });
@@ -63,10 +83,13 @@ class TinySuspenderContent {
     if (document.querySelector('body').getAttribute('data-suspended') === 'true' ) {
       return 'suspended:suspended';
     }
+    else if (this.pageBusy) {
+      return 'suspendable:busy';
+    }
     else if (this.formUpdated) {
       return 'suspendable:form_changed';
     }
-    
+
     return 'suspendable:auto';
   }
 

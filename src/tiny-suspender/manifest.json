@@ -23,6 +23,12 @@
     {
       "matches": ["*://*/*"],
       "js": ["js/content.js"]
+    },
+    {
+      "matches": ["*://*/*"],
+      "js": ["js/page-agent.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "web_accessible_resources": [

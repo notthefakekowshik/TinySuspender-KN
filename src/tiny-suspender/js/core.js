@@ -259,6 +259,7 @@ class TinySuspenderCore {
       'suspendable:url_whitelist': 'yellow',
       'suspendable:domain_whitelist': 'yellow',
       'suspendable:no_response': 'yellow',
+      'suspendable:busy': 'yellow',
       'nonsuspendible:temporary_disabled': 'yellow',
       'nonsuspendible:system_page': 'gray',
       'nonsuspendible:discarded': 'normal',

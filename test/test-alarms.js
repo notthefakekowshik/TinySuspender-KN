@@ -300,6 +300,7 @@ test('icon contract: every documented state maps to its intended icon', async ()
     'suspendable:url_whitelist':         'icon-yellow-38.png',
     'suspendable:domain_whitelist':      'icon-yellow-38.png',
     'suspendable:no_response':           'icon-yellow-38.png',
+    'suspendable:busy':                  'icon-yellow-38.png',
     'nonsuspendible:temporary_disabled': 'icon-yellow-38.png',
     'nonsuspendible:system_page':        'icon-gray-38.png',
     'nonsuspendible:discarded':          'icon-default-38.png',

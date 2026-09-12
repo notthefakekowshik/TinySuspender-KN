@@ -73,6 +73,9 @@ Suspender's State
     - `no_response`: Yellow icon. the content script did not answer in time.
       The page will NOT be suspended automatically. Manual suspension is still
       possible
+    - `busy`: Yellow icon. the page is mid-transfer, holds a live connection or
+      is showing a picture-in-picture video, so it will NOT be suspended
+      automatically. Manual suspension is still possible
     - `audible`: Yellow icon. the page will NOT be suspended automatically.
       Manual suspension is still possible
     - `pinned`: Yellow icon. the page will NOT be suspended automatically.
@@ -107,6 +110,17 @@ IPC Commands (CORE)
 - `ts_whitelist_url`: whitelist specified url
 - `ts_get_tab_state`: get state of specified tab. It will ask content script 
   for state, and then override the returned value if necessary
+
+
+Page Agent (MAIN world)
+-----------------------
+`js/page-agent.js` runs in the page's own context at document_start, before any
+page script can capture the platform APIs. It wraps fetch/XHR and tracks
+WebSocket, EventSource, RTCPeerConnection and picture-in-picture, then posts a
+single busy boolean to the content script via window.postMessage. Requests that
+stay in flight for less than 3 seconds are ignored so polling and analytics
+beacons cannot block suspension. The agent only ever observes, and only shares
+that one boolean with the extension.
 
 
 IPC Commands (Content Script)
