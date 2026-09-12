@@ -208,6 +208,81 @@ test('getTabState refuses to auto-suspend when the content script does not answe
     'manual suspension should still be possible');
 });
 
+test('suspending a YouTube tab stores the playback position in the suspend URL', async () => {
+  const mock = makeChromeMock({
+    sync: { idleTimeMinutes: 2 },
+    onTabMessage: (id, msg) => {
+      if (msg.command === 'ts_get_tab_state') return {state: 'suspendable:auto'};
+      if (msg.command === 'ts_get_tab_scroll') return {scroll: {x: 0, y: 120}};
+      if (msg.command === 'ts_get_tab_media') return {media: {currentTime: 754}};
+      return undefined;
+    },
+  });
+  mock.setTabs([{id: 11, active: true, url: 'https://www.youtube.com/watch?v=abc123', title: 'Video'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  core.suspendTab(11);
+  await flush();
+
+  const update = mock.calls.tabsUpdate.find((c) => c.id === 11 && c.info.url && c.info.url.startsWith('suspend.html'));
+  assert.ok(update, 'tab should be suspended');
+  const suspendUrl = new URL(update.info.url, 'chrome-extension://test-extension-id/');
+  assert.strictEqual(suspendUrl.searchParams.get('media_t'), '754');
+});
+
+test('restoring a suspended YouTube tab seeks back to the stored position', async () => {
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
+  const suspendUrl = 'chrome-extension://test-extension-id/suspend.html'
+    + '?url=' + encodeURIComponent('https://www.youtube.com/watch?v=abc123')
+    + '&title=' + encodeURIComponent('Video')
+    + '&scroll_x=0&scroll_y=120'
+    + '&media_t=754';
+  mock.setTabs([{id: 11, active: true, url: suspendUrl, title: 'Video'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  core.restoreTab(11);
+  await flush();
+
+  const update = mock.calls.tabsUpdate.find((c) => c.id === 11);
+  assert.ok(update, 'tab should be restored');
+  const restored = new URL(update.info.url);
+  assert.strictEqual(restored.hostname, 'www.youtube.com');
+  assert.strictEqual(restored.searchParams.get('v'), 'abc123');
+  assert.strictEqual(restored.searchParams.get('t'), '754s');
+});
+
+test('media position is not requested for non-YouTube tabs', async () => {
+  const mock = makeChromeMock({
+    sync: { idleTimeMinutes: 2 },
+    onTabMessage: (id, msg) => {
+      if (msg.command === 'ts_get_tab_state') return {state: 'suspendable:auto'};
+      if (msg.command === 'ts_get_tab_scroll') return {scroll: {x: 0, y: 0}};
+      return undefined;
+    },
+  });
+  mock.setTabs([{id: 12, active: true, url: 'https://example.com/', title: 'Example'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  core.suspendTab(12);
+  await flush();
+
+  assert.strictEqual(
+    mock.calls.tabsSendMessage.some((c) => c.msg.command === 'ts_get_tab_media'), false,
+    'non-YouTube tabs should not be asked for a playback position');
+  const update = mock.calls.tabsUpdate.find((c) => c.id === 12 && c.info.url && c.info.url.startsWith('suspend.html'));
+  assert.ok(update, 'tab should still be suspended');
+  assert.ok(!update.info.url.includes('media_t'), 'suspend URL should not carry a media timestamp');
+});
+
 test('icon contract: every documented state maps to its intended icon', async () => {
   // If you add a new state to getTabState, add it here too. Without this
   // contract, a forgotten state silently falls through to the 'red' default

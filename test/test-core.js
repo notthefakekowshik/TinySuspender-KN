@@ -53,6 +53,28 @@ test('isAutoSuspendable only matches the exact suspendable:auto state', () => {
   assert.strictEqual(ts.isAutoSuspendable(null), false);
 });
 
+test('isYoutubeUrl matches YouTube hosts only', () => {
+  assert.strictEqual(ts.isYoutubeUrl('https://www.youtube.com/watch?v=abc'), true);
+  assert.strictEqual(ts.isYoutubeUrl('https://m.youtube.com/watch?v=abc'), true);
+  assert.strictEqual(ts.isYoutubeUrl('https://music.youtube.com/watch?v=abc'), true);
+  assert.strictEqual(ts.isYoutubeUrl('https://youtu.be/abc'), true);
+  assert.strictEqual(ts.isYoutubeUrl('https://notyoutube.com/watch?v=abc'), false);
+  assert.strictEqual(ts.isYoutubeUrl('https://example.com/youtube.com'), false);
+  assert.strictEqual(ts.isYoutubeUrl(null), false);
+});
+
+test('addMediaStartTime appends a YouTube resume timestamp', () => {
+  assert.strictEqual(
+    ts.addMediaStartTime('https://www.youtube.com/watch?v=abc', '754'),
+    'https://www.youtube.com/watch?v=abc&t=754s');
+  assert.strictEqual(
+    ts.addMediaStartTime('https://www.youtube.com/watch?v=abc&t=30s', '754'),
+    'https://www.youtube.com/watch?v=abc&t=754s');
+  assert.strictEqual(
+    ts.addMediaStartTime('https://example.com/watch?v=abc', '754'),
+    'https://example.com/watch?v=abc');
+});
+
 test('package.json version stays in sync with the extension manifest', () => {
   const manifest = require('../src/tiny-suspender/manifest.json');
   const pkg = require('../package.json');

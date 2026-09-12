@@ -83,6 +83,17 @@ class TinySuspenderContent {
     sendResponse({scroll: scrollPosition});
   }
 
+  get_tab_media(request, sender, sendResponse) {
+    let video = document.querySelector('video');
+
+    if (!video) {
+      sendResponse({media: null});
+      return;
+    }
+
+    sendResponse({media: {currentTime: Math.floor(video.currentTime)}});
+  }
+
   set_tab_scroll(request, sender, sendResponse) {
     let scroll = request.scroll;
     setTimeout(() => {

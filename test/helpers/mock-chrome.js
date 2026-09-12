@@ -77,8 +77,10 @@ function makeChromeMock(initial = {}) {
       sendMessage: (id, msg, ...rest) => {
         calls.tabsSendMessage.push({id, msg});
         const cb = rest.find((x) => typeof x === 'function');
-        // Pretend no content script is listening; respond with undefined.
-        if (cb) setImmediate(() => cb(undefined));
+        // Respond through the optional initial.onTabMessage(id, msg) handler;
+        // without one, pretend no content script is listening (undefined).
+        const response = initial.onTabMessage ? initial.onTabMessage(id, msg) : undefined;
+        if (cb) setImmediate(() => cb(response));
       },
       discard: () => {},
       create: (info, cb) => { if (cb) cb({}); },

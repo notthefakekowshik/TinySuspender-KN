@@ -437,6 +437,40 @@ class TinySuspenderCore {
     });
   } 
 
+  isYoutubeUrl(url) {
+    try {
+      let host = new URL(url).hostname;
+      return host === 'youtube.com' || host === 'youtu.be' || host.endsWith('.youtube.com');
+    }
+    catch (error) {
+      return false;
+    }
+  }
+
+  getTabMedia(tab) {
+    return new Promise((resolve) => {
+      // Asking every page would cost a round trip for a feature it does not
+      // support, so only YouTube tabs are queried.
+      if (!tab || !this.isYoutubeUrl(tab.url)) {
+        resolve(null);
+        return;
+      }
+
+      let timer = setTimeout(() => resolve(null), 500);
+
+      this.chrome.tabs.sendMessage(tab.id, {command: 'ts_get_tab_media'}, {}, (response) => {
+        clearTimeout(timer);
+
+        if (this.chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+
+        resolve((response && response.media) ? response.media : null);
+      });
+    });
+  }
+
   isSuspendable(state) {
     if (state && state.split) {
       let suspendable = state.split(':')[0];
@@ -487,12 +521,18 @@ class TinySuspenderCore {
     });
   }
 
-  buildSuspendUrl(tab, scroll) {
-    return 'suspend.html?url=' + encodeURIComponent(tab.url)
+  buildSuspendUrl(tab, scroll, media) {
+    let url = 'suspend.html?url=' + encodeURIComponent(tab.url)
          + '&title=' + encodeURIComponent(tab.title)
          + '&favIconUrl=' + encodeURIComponent(tab.favIconUrl)
          + '&scroll_x=' + encodeURIComponent(scroll.x)
          + '&scroll_y=' + encodeURIComponent(scroll.y);
+
+    if (media && media.currentTime > 0) {
+      url += '&media_t=' + encodeURIComponent(media.currentTime);
+    }
+
+    return url;
   }
 
   doSuspend(tabId, guard) {
@@ -512,7 +552,9 @@ class TinySuspenderCore {
             this.log('this tab is already suspended via native tab discard: ', tab.id);
           }
           else {
-            this.chrome.tabs.update(tab.id, {url: this.buildSuspendUrl(tab, scroll)});
+            this.getTabMedia(tab).then((media) => {
+              this.chrome.tabs.update(tab.id, {url: this.buildSuspendUrl(tab, scroll, media)});
+            });
           }
         });
       })
@@ -537,9 +579,27 @@ class TinySuspenderCore {
         });
 
         let pageUrl = url.searchParams.get('url');
+        let mediaTime = url.searchParams.get('media_t');
+        if (mediaTime) {
+          pageUrl = this.addMediaStartTime(pageUrl, mediaTime);
+        }
+
         this.chrome.tabs.update(tab.id, {url: pageUrl});
       }
     });
+  }
+
+  addMediaStartTime(pageUrl, seconds) {
+    if (!this.isYoutubeUrl(pageUrl)) return pageUrl;
+
+    try {
+      let url = new URL(pageUrl);
+      url.searchParams.set('t', seconds + 's');
+      return url.toString();
+    }
+    catch (error) {
+      return pageUrl;
+    }
   }
 
   shouldAutorestore(tabId) {
