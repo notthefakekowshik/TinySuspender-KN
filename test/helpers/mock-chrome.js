@@ -25,6 +25,7 @@ function makeChromeMock(initial = {}) {
   const sessionStorage = { ...(initial.session || {}) };
   const alarms = new Map();
   const tabs = new Map();
+  let nextTabId = 1;
 
   const hubs = {
     onMessage: makeListenerHub(),
@@ -44,6 +45,7 @@ function makeChromeMock(initial = {}) {
     alarmsCreate: [],
     alarmsClear: [],
     tabsUpdate: [],
+    tabsCreate: [],
     tabsDiscard: [],
     tabsSendMessage: [],
     setIcon: [],
@@ -95,7 +97,14 @@ function makeChromeMock(initial = {}) {
         if (t) t.discarded = true;
         if (cb) cb();
       },
-      create: (info, cb) => { if (cb) cb({}); },
+      create: (info, cb) => {
+        calls.tabsCreate.push(info);
+        while (tabs.has(nextTabId)) nextTabId++;
+        const created = {id: nextTabId, url: info.url, active: !!info.active, title: '', discarded: false};
+        tabs.set(nextTabId, created);
+        nextTabId++;
+        if (cb) cb(created);
+      },
     },
     storage: {
       sync: {
