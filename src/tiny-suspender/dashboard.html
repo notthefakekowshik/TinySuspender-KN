@@ -20,9 +20,31 @@
     <h2>Summary</h2>
     <table class="dashboard" id="summary"></table>
 
+    <h2>Reclaim now</h2>
+    <div class="fieldset">
+      <label for="reclaim_age">Suspend background tabs idle for longer than:</label>
+      <select id="reclaim_age">
+        <option value="60" selected>1 hour</option>
+        <option value="180">3 hours</option>
+        <option value="1440">24 hours</option>
+      </select>
+      <button type="button" id="reclaim_now">Suspend idle tabs</button>
+      <small class="dashboard-note" id="reclaim_message">
+        Runs the same check as the automatic sweep, so tabs holding unsaved form data, playing
+        audio, mid-transfer or in picture-in-picture are skipped and reported rather than lost.
+      </small>
+    </div>
+
     <h2>Top domains by suspended tabs</h2>
     <small class="dashboard-note">Hostname taken from each suspended tab's original page, most-suspended first. Listed as domain, then suspended-tab count.</small>
     <table class="dashboard" id="domains"></table>
+
+    <h2>Suspended over time</h2>
+    <small class="dashboard-note">
+      One sample an hour, plus one after each reclaim, kept in local storage on this machine &mdash;
+      nothing leaves the browser. Estimated memory uses the same flat per-tab figure as the summary.
+    </small>
+    <table class="dashboard" id="history"></table>
 
     <h2>Why the memory figure is an estimate</h2>
     <small class="dashboard-note" id="estimate_note">

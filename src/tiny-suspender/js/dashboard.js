@@ -8,6 +8,34 @@ const BYTES_PER_TAB = 150 * 1024 * 1024;
 // Only the busiest domains are listed; this is a dashboard, not a full report.
 const TOP_DOMAINS = 10;
 
+// How many history samples the table shows. The window core.js keeps in
+// storage.local holds more of them; this page is a summary, not a log.
+const HISTORY_ROWS = 24;
+
+// Written by the service worker (core.js), so a sample is taken even when this
+// page is closed.
+const HISTORY_KEY = 'suspendHistory';
+
+// Why a reclaim (or the idle sweep) left a tab alone, in words. The states come
+// from core's getTabState.
+const SKIP_LABELS = {
+  'suspendable:auto_disabled': 'automatic suspension is off',
+  'suspendable:form_changed': 'unsaved form data',
+  'suspendable:audible': 'playing audio',
+  'suspendable:pinned': 'pinned',
+  'suspendable:offline': 'offline',
+  'suspendable:tab_whitelist': 'snoozed on that tab',
+  'suspendable:url_whitelist': 'whitelisted url',
+  'suspendable:domain_whitelist': 'whitelisted domain',
+  'suspendable:no_response': 'did not respond',
+  'suspendable:busy': 'busy (transfer, live connection or picture-in-picture)',
+  'nonsuspendible:temporary_disabled': 'suspension turned off for that tab',
+  'nonsuspendible:system_page': 'system page',
+  'nonsuspendible:discarded': 'already discarded',
+  'nonsuspendible:not_running': 'content script not running',
+  'nonsuspendible:error': 'state could not be read',
+};
+
 
 let setRows = (tableId, rows) => {
   let table = document.querySelector('#' + tableId);
@@ -21,6 +49,29 @@ let setRows = (tableId, rows) => {
     value.textContent = row[1];
     tr.appendChild(label);
     tr.appendChild(value);
+    table.appendChild(tr);
+  });
+};
+
+let setTable = (tableId, headers, rows) => {
+  let table = document.querySelector('#' + tableId);
+  table.textContent = '';
+
+  let head = document.createElement('tr');
+  headers.forEach((text) => {
+    let th = document.createElement('th');
+    th.textContent = text;
+    head.appendChild(th);
+  });
+  table.appendChild(head);
+
+  rows.forEach((row) => {
+    let tr = document.createElement('tr');
+    row.forEach((text) => {
+      let td = document.createElement('td');
+      td.textContent = text;
+      tr.appendChild(td);
+    });
     table.appendChild(tr);
   });
 };
@@ -153,6 +204,111 @@ class TinySuspenderDashboard {
     return (Math.round((megabytes / 1024) * 10) / 10) + ' GB';
   }
 
+  // Newest first, capped at what the table shows. Kept free of formatting so it
+  // can be asserted directly.
+  historyRows(samples, limit) {
+    return (samples || [])
+      .slice(-(limit || HISTORY_ROWS))
+      .reverse()
+      .map((sample) => {
+        let suspended = (sample.own || 0) + (sample.orphaned || 0);
+        return {
+          at: sample.at,
+          suspended: suspended,
+          estimated: this.estimateReclaimedBytes(suspended),
+        };
+      });
+  }
+
+  formatTime(at) {
+    if (!at) return '(unknown)';
+    return new Date(at).toLocaleString();
+  }
+
+  // What the reclaim reports when it finishes: how many idle tabs were examined,
+  // how many were suspended, and in words why the rest were left alone.
+  reclaimSummary(stats) {
+    if (!stats) return '';
+    if (!stats.total) return 'No background tab has been idle that long.';
+
+    let skipped = Object.keys(stats.skipped || {}).map((state) =>
+      (SKIP_LABELS[state] || state) + ' (' + stats.skipped[state] + ')');
+
+    let summary = 'Suspended ' + stats.suspended + ' of ' + stats.total + ' idle tab(s)';
+    if (skipped.length) summary += '. Skipped ' + skipped.join(', ');
+
+    return summary + '.';
+  }
+
+  renderHistory(samples) {
+    let rows = this.historyRows(samples);
+    setTable('history', ['When', 'Suspended', 'Estimated reclaimed'],
+      rows.map((row) => [this.formatTime(row.at), String(row.suspended), this.formatBytes(row.estimated)]));
+  }
+
+  refresh() {
+    this.chrome.tabs.query({}, (tabs) => this.render(tabs));
+
+    this.chrome.storage.local.get([HISTORY_KEY], (items) => {
+      this.renderHistory(items && items[HISTORY_KEY]);
+    });
+  }
+
+  onReclaim() {
+    let button = document.querySelector('#reclaim_now');
+    let message = document.querySelector('#reclaim_message');
+    let minAgeMinutes = parseInt(document.querySelector('#reclaim_age').value);
+
+    button.disabled = true;
+    message.textContent = 'Suspending idle tabs…';
+
+    this.chrome.runtime.sendMessage({command: 'ts_reclaim_idle_tabs', minAgeMinutes: minAgeMinutes}, (response) => {
+      if (this.chrome.runtime.lastError) {
+        button.disabled = false;
+        message.textContent = 'Could not start: ' + this.chrome.runtime.lastError.message;
+        return;
+      }
+
+      if (response && response.error) {
+        button.disabled = false;
+        message.textContent = 'Could not start: ' + response.error;
+        return;
+      }
+
+      // A sweep that was already running is not an error: polling picks up the
+      // one in flight.
+      this.pollReclaim();
+    });
+  }
+
+  // The sweep navigates every tab it reclaims, so core paces it. Poll like the
+  // options page does for adoption, and report what it skipped at the end.
+  pollReclaim() {
+    let button = document.querySelector('#reclaim_now');
+    let message = document.querySelector('#reclaim_message');
+
+    let poll = setInterval(() => {
+      this.chrome.runtime.sendMessage({command: 'ts_reclaim_status'}, (response) => {
+        let stats = response && response.stats;
+
+        if (response && response.running) {
+          message.textContent = 'Suspending idle tabs… '
+            + (stats ? stats.processed + ' of ' + stats.total : '');
+          return;
+        }
+
+        clearInterval(poll);
+        button.disabled = false;
+        message.textContent = this.reclaimSummary(stats) || 'Nothing was reclaimed.';
+        this.refresh();
+
+        // core samples the history shortly after the sweep finishes, once the
+        // swaps it made have landed; pick that row up as well.
+        setTimeout(() => this.refresh(), 2500);
+      });
+    }, 500);
+  }
+
   render(tabs) {
     let buckets = this.classifyTabs(tabs);
     let suspended = buckets.own + buckets.orphaned;
@@ -177,9 +333,9 @@ class TinySuspenderDashboard {
       if (items.dark_mode) document.body.classList.add('dark-mode');
     });
 
-    this.chrome.tabs.query({}, (tabs) => {
-      this.render(tabs);
-    });
+    document.querySelector('#reclaim_now').onclick = this.onReclaim.bind(this);
+
+    this.refresh();
   }
 
 }

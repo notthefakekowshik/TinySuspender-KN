@@ -26,6 +26,18 @@ const AUTOSUSPEND_PER_TICK = 10;
 // other scheme that runs what it carries.
 const RESTORABLE_PROTOCOLS = ['http:', 'https:', 'file:'];
 
+// Manual reclaim from the dashboard: the automatic sweep's decisions, run on
+// demand. Every suspension navigates a tab, so it is paced like adoption and
+// discarding.
+const RECLAIM_BATCH_SIZE = 5;
+const RECLAIM_BATCH_DELAY_MS = 200;
+
+// The dashboard's history is a rolling window in storage.local: a sample an
+// hour, plus one after each reclaim, trimmed to the newest samples.
+const HISTORY_KEY = 'suspendHistory';
+const HISTORY_LIMIT = 200;
+const HISTORY_SAMPLE_INTERVAL_MS = 60 * 60 * 1000;
+
 
 class TinySuspenderCore {
 
@@ -52,6 +64,15 @@ class TinySuspenderCore {
 
     // Fallback idle clock for a browser that does not report tabs.Tab.lastAccessed.
     this.fallbackIdleSince = {};
+
+    // Guards the paced reclaim sweep the dashboard starts, and carries its
+    // progress so the page can poll for it.
+    this.reclaimInProgress = false;
+    this.reclaimStats = null;
+
+    // When the dashboard history last took a sample. The scan ticks every
+    // minute but keeps at most one sample an hour.
+    this.lastHistorySampleAt = 0;
 
     this.idleTimeMinutes = 30;
     this.whitelist = [];
@@ -582,6 +603,10 @@ class TinySuspenderCore {
 
   runAutosuspensionScan() {
     this.settingsReady.then(() => {
+      // Keeps the dashboard history ticking. recordSuspendSample skips itself
+      // unless an hour has passed, so this costs nothing on most ticks.
+      this.recordSuspendSample(false);
+
       if (this.idleTimeMinutes == 0) return;
 
       this.chrome.tabs.query({active: false}, (tabs) => {
@@ -883,6 +908,140 @@ class TinySuspenderCore {
     });
   }
 
+  // Counts every tab into exactly one bucket, the same way the dashboard does:
+  // a suspend page is matched before the discarded flag, because our own
+  // suspended tabs are discarded too. own + orphaned + discarded + live always
+  // equals the tab count.
+  classifyTabs(tabs) {
+    let buckets = {own: 0, orphaned: 0, discarded: 0, live: 0};
+
+    (tabs || []).forEach((tab) => {
+      if (this.isSuspendPageUrl(tab.url)) {
+        if (this.isSuspendedUrl(tab.url)) buckets.own++;
+        else buckets.orphaned++;
+      }
+      else if (tab.discarded) {
+        buckets.discarded++;
+      }
+      else {
+        buckets.live++;
+      }
+    });
+
+    return buckets;
+  }
+
+  loadSuspendHistory(callback) {
+    this.chrome.storage.local.get([HISTORY_KEY], (items) => {
+      let history = items && items[HISTORY_KEY];
+      callback(Array.isArray(history) ? history : []);
+    });
+  }
+
+  // One sample for the dashboard's history. Cheap on the ticks that skip it:
+  // the timestamp is checked before anything is queried or written.
+  recordSuspendSample(force, callback) {
+    let now = Date.now();
+
+    if (!force && (now - this.lastHistorySampleAt) < HISTORY_SAMPLE_INTERVAL_MS) {
+      if (callback) callback(false);
+      return;
+    }
+
+    this.chrome.tabs.query({}, (tabs) => {
+      let sample = Object.assign({at: now}, this.classifyTabs(tabs));
+      this.lastHistorySampleAt = now;
+
+      this.loadSuspendHistory((history) => {
+        history.push(sample);
+        if (history.length > HISTORY_LIMIT) {
+          history = history.slice(history.length - HISTORY_LIMIT);
+        }
+
+        this.chrome.storage.local.set({[HISTORY_KEY]: history}, () => {
+          void this.chrome.runtime.lastError;
+          if (callback) callback(true);
+        });
+      });
+    });
+  }
+
+  // The dashboard's "reclaim now" button: suspends background tabs idle for
+  // longer than minAgeMinutes. Every tab still goes through the automatic path
+  // (whitelist, unsaved form data, audio, busy, offline), so a manual reclaim
+  // can never lose what the idle sweep would have protected — only the moment
+  // the check runs differs. Paced like the other sweeps, and each tab's state is
+  // reported so the page can say what it skipped.
+  reclaimIdleTabs(minAgeMinutes, callback) {
+    if (this.reclaimInProgress) return false;
+
+    // Marked before the tab list is read: a progress poll that lands in between
+    // must not mistake the sweep for a finished one.
+    this.reclaimInProgress = true;
+
+    this.chrome.tabs.query({active: false}, (tabs) => {
+      let now = Date.now();
+
+      let candidates = tabs.filter((tab) => {
+        if (tab.discarded || this.isSuspendPageUrl(tab.url) || this.isSystemPage(tab)) return false;
+        return this.idleMinutesFor(tab, now) >= minAgeMinutes;
+      });
+
+      this.reclaimStats = {total: candidates.length, processed: 0, suspended: 0, skipped: {}};
+
+      if (!candidates.length) {
+        this.reclaimInProgress = false;
+        if (callback) callback(this.reclaimStats);
+        return;
+      }
+
+      let index = 0;
+
+      let step = () => {
+        let batch = candidates.slice(index, index + RECLAIM_BATCH_SIZE);
+        index += batch.length;
+
+        Promise.all(batch.map((tab) => this.reclaimIdleTab(tab))).then(() => {
+          if (index < candidates.length) {
+            setTimeout(step, RECLAIM_BATCH_DELAY_MS);
+            return;
+          }
+
+          this.reclaimInProgress = false;
+          if (callback) callback(this.reclaimStats);
+
+          // Let the last swaps and discards land before sampling, otherwise the
+          // history misses the tabs this run just suspended.
+          setTimeout(() => this.recordSuspendSample(true), 1500);
+        });
+      };
+
+      step();
+    });
+
+    return true;
+  }
+
+  reclaimIdleTab(tab) {
+    return this.getTabState(tab.id)
+      .then((state) => {
+        this.reclaimStats.processed++;
+
+        if (this.isAutoSuspendable(state.state)) {
+          this.reclaimStats.suspended++;
+          this.autoSuspendTab(tab.id);
+          return;
+        }
+
+        this.reclaimStats.skipped[state.state] = (this.reclaimStats.skipped[state.state] || 0) + 1;
+      })
+      .catch(() => {
+        this.reclaimStats.processed++;
+        this.reclaimStats.skipped['nonsuspendible:error'] =
+          (this.reclaimStats.skipped['nonsuspendible:error'] || 0) + 1;
+      });
+  }
+
   addMediaStartTime(pageUrl, seconds) {
     if (!this.isYoutubeUrl(pageUrl)) return pageUrl;
 
@@ -1136,6 +1295,23 @@ class TinySuspenderCore {
   import_suspended_tabs(request, sender, sendResponse) {
     this.importSuspendedTabs(request.urls, (imported) => sendResponse({imported: imported}));
     return true;
+  }
+
+  reclaim_idle_tabs(request, sender, sendResponse) {
+    let minAgeMinutes = parseInt(request.minAgeMinutes);
+    if (isNaN(minAgeMinutes) || minAgeMinutes < 0) {
+      sendResponse({started: false, error: 'invalid age'});
+      return;
+    }
+
+    // The sweep is paced and reports progress through ts_reclaim_status, so this
+    // only says whether it was accepted: a second request cannot start a
+    // parallel sweep over the same tabs.
+    sendResponse({started: this.reclaimIdleTabs(minAgeMinutes, () => {})});
+  }
+
+  reclaim_status(request, sender, sendResponse) {
+    sendResponse({running: this.reclaimInProgress, stats: this.reclaimStats});
   }
 
   get_tab_state(request, sender, sendResponse) {

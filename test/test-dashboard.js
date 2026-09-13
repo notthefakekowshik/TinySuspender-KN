@@ -130,3 +130,47 @@ test('formatBytes renders MB and GB', () => {
   assert.strictEqual(dashboard.formatBytes(10 * BYTES_PER_TAB), '1.5 GB');
   assert.strictEqual(dashboard.formatBytes(0), '0 MB');
 });
+
+test('historyRows lists the newest samples first with the same estimate', () => {
+  const samples = [
+    {at: 1, own: 2, orphaned: 0, discarded: 3, live: 5},
+    {at: 2, own: 4, orphaned: 1, discarded: 0, live: 2},
+  ];
+
+  const rows = dashboard.historyRows(samples);
+
+  assert.deepStrictEqual(rows.map((row) => row.at), [2, 1], 'newest first');
+  assert.deepStrictEqual(rows.map((row) => row.suspended), [5, 2],
+    'suspended means own plus orphaned, not the discarded bucket');
+  assert.strictEqual(rows[0].estimated, 5 * BYTES_PER_TAB);
+});
+
+test('historyRows caps the table and tolerates an empty window', () => {
+  const samples = [];
+  for (let i = 0; i < 30; i++) samples.push({at: i, own: i, orphaned: 0, discarded: 0, live: 0});
+
+  const rows = dashboard.historyRows(samples, 5);
+
+  assert.strictEqual(rows.length, 5);
+  assert.deepStrictEqual(rows.map((row) => row.at), [29, 28, 27, 26, 25]);
+  assert.deepStrictEqual(dashboard.historyRows([]), []);
+});
+
+test('reclaimSummary explains what the reclaim skipped', () => {
+  assert.strictEqual(
+    dashboard.reclaimSummary({total: 5, processed: 5, suspended: 3, skipped: {'suspendable:form_changed': 2}}),
+    'Suspended 3 of 5 idle tab(s). Skipped unsaved form data (2).');
+
+  assert.strictEqual(
+    dashboard.reclaimSummary({total: 2, processed: 2, suspended: 2, skipped: {}}),
+    'Suspended 2 of 2 idle tab(s).');
+
+  assert.strictEqual(
+    dashboard.reclaimSummary({total: 0, processed: 0, suspended: 0, skipped: {}}),
+    'No background tab has been idle that long.');
+
+  // An unmapped state still says something instead of printing nothing.
+  assert.strictEqual(
+    dashboard.reclaimSummary({total: 1, processed: 1, suspended: 0, skipped: {'suspendable:new_state': 1}}),
+    'Suspended 0 of 1 idle tab(s). Skipped suspendable:new_state (1).');
+});

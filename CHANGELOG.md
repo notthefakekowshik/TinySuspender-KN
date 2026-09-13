@@ -7,6 +7,19 @@ before being merged.
 
 When you bump the version, add a section here in the same commit.
 
+## 2.7.0 — 2026-09-13 (branch: `master`)
+
+- The Memory Dashboard can act, not just report: pick an age (1, 3 or 24 hours) and **Suspend idle
+  tabs** reclaims the background tabs that have been idle longer than that. It is paced like the
+  other sweeps, and every candidate still goes through the automatic check — a whitelist, unsaved
+  form data, audio, a live transfer or picture-in-picture skips the tab exactly as it would in the
+  idle sweep. Skips are reported ("Suspended 3 of 5 idle tab(s). Skipped unsaved form data (2).")
+  rather than passing for a silent failure, and a second click cannot start a parallel sweep.
+- The dashboard keeps a small history: one sample an hour, taken by the service worker so it also
+  accumulates while the page is closed, plus one after each reclaim. Samples live in
+  `storage.local`, capped at the newest 200 and shown as the last 24, with the same
+  estimated-memory figure as the summary. Nothing leaves the browser.
+
 ## 2.6.1 — 2026-09-13 (branch: `master`)
 
 - Importing suspended tabs now only accepts an actual suspend page carrying a restorable target.
