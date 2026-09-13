@@ -10,6 +10,16 @@ const ADOPT_BATCH_DELAY_MS = 250;
 const DISCARD_BATCH_SIZE = 5;
 const DISCARD_BATCH_DELAY_MS = 200;
 
+// Auto-suspension runs off a single periodic alarm that scans for idle tabs.
+// The earlier model created one alarm per background tab, which Chrome caps at
+// 500 per extension — so a large session silently stopped getting timers past
+// the cap, and restoring a session fired a chrome.alarms.get per tab.
+const AUTOSUSPEND_ALARM = 'ts-autosuspend';
+const AUTOSUSPEND_PERIOD_MINUTES = 1;
+// Each suspension navigates a tab, so cap how many run per tick and let the
+// next tick pick up the rest.
+const AUTOSUSPEND_PER_TICK = 10;
+
 
 class TinySuspenderCore {
 
@@ -34,9 +44,8 @@ class TinySuspenderCore {
     this.discardInProgress = false;
     this.discardPending = false;
 
-    // Chrome's onActivated does not say which tab was deactivated, so we track
-    // it ourselves instead of re-checking every background tab on each switch.
-    this.lastActiveTabId = null;
+    // Fallback idle clock for a browser that does not report tabs.Tab.lastAccessed.
+    this.fallbackIdleSince = {};
 
     this.idleTimeMinutes = 30;
     this.whitelist = [];
@@ -135,7 +144,6 @@ class TinySuspenderCore {
     this.chrome.tabs.onUpdated.addListener(this.onTabUpdated.bind(this));
     this.chrome.tabs.onActivated.addListener(this.onTabActivated.bind(this));
     this.chrome.tabs.onRemoved.addListener(this.onTabRemoved.bind(this));
-    this.chrome.tabs.onCreated.addListener(this.onTabCreated.bind(this));
     this.chrome.runtime.onInstalled.addListener(this.onPluginInstalled.bind(this));
     this.chrome.contextMenus.onClicked.addListener(this.onContextMenuClickHandler.bind(this));
     this.chrome.commands.onCommand.addListener(this.onCommand.bind(this));
@@ -154,13 +162,14 @@ class TinySuspenderCore {
       ];
       const affectsTimers = timerKeys.some((key) => key in changes);
 
-      this.readSettings();
+      this.settingsReady = this.readSettings();
       if (affectsTimers) {
-        this.resetAutoSuspensionTimers();
+        this.ensureAutosuspensionAlarm();
       }
     });
     this.chrome.alarms.onAlarm.addListener(this.onAlarm.bind(this));
-    this.initTimersForBackgroundTabs();
+    this.loadIdleClocks();
+    this.ensureAutosuspensionAlarm();
     this.discardInactiveSuspendedTabs();
   }
 
@@ -518,46 +527,69 @@ class TinySuspenderCore {
     return false;
   }
 
-  cancelTabAutosuspensionTimer(tabId) {
-    this.log('canceling suspension timer for ', tabId)
-    let alarmName = `${tabId}`;
-    this.chrome.alarms.clear(alarmName);
-  }
+  // One periodic alarm instead of one per tab — see AUTOSUSPEND_ALARM.
+  ensureAutosuspensionAlarm() {
+    this.settingsReady.then(() => {
+      if (this.idleTimeMinutes == 0) {
+        this.chrome.alarms.clear(AUTOSUSPEND_ALARM);
+        return;
+      }
 
-  createTabAutosuspensionTimer(tabId) {
-    this.log('creating suspension timer for ', tabId)
-    let alarmName = `${tabId}`;
-    this.chrome.alarms.create(alarmName, {delayInMinutes: this.idleTimeMinutes})
-  }
-
-  initTimersForBackgroundTabs() {
-    this.log('initTimersForBackgroundTabs');
-    this.readSettings()
-      .then((settings) => {
-        if (settings.idleTimeMinutes == 0) return;
-        // The alarm handler re-checks isAutoSuspendable when it fires, so we don't
-        // need to query each tab's state here — just ensure an alarm exists. The
-        // active tab is remembered rather than given a timer: it only needs one
-        // once it leaves the foreground, which onTabActivated handles without a scan.
-        this.chrome.tabs.query({}, (tabs) => {
-          tabs.forEach((tab) => {
-            if (tab.active) {
-              this.lastActiveTabId = tab.id;
-              return;
-            }
-            this.ensureTabAutosuspensionTimer(tab.id);
-          });
-        });
-      })
-      .catch((error) => {});
-  }
-
-  resetAutoSuspensionTimers() {
-    this.chrome.tabs.query({}, (tabs) => {
-      tabs.forEach((tab) => {
-        this.cancelTabAutosuspensionTimer(tab.id);
+      this.chrome.alarms.get(AUTOSUSPEND_ALARM, (alarm) => {
+        if (alarm) return;
+        this.chrome.alarms.create(AUTOSUSPEND_ALARM, {periodInMinutes: AUTOSUSPEND_PERIOD_MINUTES});
       });
-      this.initTimersForBackgroundTabs();
+    });
+  }
+
+  loadIdleClocks() {
+    this.chrome.storage.session.get(['idle_since'], (items) => {
+      this.fallbackIdleSince = (items && items.idle_since) || {};
+    });
+  }
+
+  saveIdleClocks() {
+    this.chrome.storage.session.set({'idle_since': this.fallbackIdleSince});
+  }
+
+  // tabs.Tab.lastAccessed is when the tab was last accessed, i.e. how long it has
+  // been in the background, so no per-tab bookkeeping is needed and it survives a
+  // worker restart. Where it is missing, fall back to when this worker first saw
+  // the tab, kept in storage.session so a teardown does not restart every clock.
+  idleMinutesFor(tab, now) {
+    if (typeof tab.lastAccessed === 'number') {
+      return (now - tab.lastAccessed) / 60000;
+    }
+
+    let since = this.fallbackIdleSince[tab.id];
+    if (since === undefined) {
+      this.fallbackIdleSince[tab.id] = now;
+      this.saveIdleClocks();
+      return 0;
+    }
+
+    return (now - since) / 60000;
+  }
+
+  runAutosuspensionScan() {
+    this.settingsReady.then(() => {
+      if (this.idleTimeMinutes == 0) return;
+
+      this.chrome.tabs.query({active: false}, (tabs) => {
+        let now = Date.now();
+
+        // A cheap pre-filter only. The real decision (whitelist, unsaved form
+        // data, offline) still happens inside autoSuspendTab, so suspension
+        // quality is unchanged — this just decides when to try.
+        let candidates = tabs.filter((tab) => {
+          if (tab.discarded || this.isSuspendPageUrl(tab.url) || this.isSystemPage(tab)) return false;
+          if (this.skipPinned && tab.pinned) return false;
+          if (this.skipAudible && tab.audible) return false;
+          return this.idleMinutesFor(tab, now) >= this.idleTimeMinutes;
+        });
+
+        candidates.slice(0, AUTOSUSPEND_PER_TICK).forEach((tab) => this.autoSuspendTab(tab.id));
+      });
     });
   }
 
@@ -885,11 +917,9 @@ class TinySuspenderCore {
   }
 
   onAlarm(alarm) {
-    this.log('timer alarm fired:', alarm);
-    let tabId = parseInt(alarm.name);
-    if (isNaN(tabId)) return;
-
-    this.autoSuspendTab(tabId);
+    if (alarm.name !== AUTOSUSPEND_ALARM) return;
+    this.log('autosuspension tick');
+    this.runAutosuspensionScan();
   }
 
   onContextMenuClickHandler(info, tab) {
@@ -1001,31 +1031,15 @@ class TinySuspenderCore {
   }
 
   onTabRemoved(tabId, removeInfo) {
-    this.cancelTabAutosuspensionTimer(tabId);
     if (this.tabState[tabId]) {
       delete this.tabState[tabId];
       this.saveState();
     }
     this.clearTabScroll(tabId);
-  }
-
-  onTabCreated(tab) {
-    if (tab.active) return;
-    this.ensureTabAutosuspensionTimer(tab.id);
-  }
-
-  ensureTabAutosuspensionTimer(tabId) {
-    // Wait for the first settings load — without this gate, alarms created
-    // immediately after a service-worker wake use the constructor default
-    // (30 min) instead of the user's actual idleTimeMinutes.
-    this.settingsReady.then(() => {
-      if (this.idleTimeMinutes == 0) return;
-      let alarmName = `${tabId}`;
-      this.chrome.alarms.get(alarmName, (alarm) => {
-        if (alarm) return;
-        this.createTabAutosuspensionTimer(tabId);
-      });
-    });
+    if (this.fallbackIdleSince[tabId] !== undefined) {
+      delete this.fallbackIdleSince[tabId];
+      this.saveIdleClocks();
+    }
   }
 
   onTabActivated(activeInfo) {
@@ -1039,16 +1053,6 @@ class TinySuspenderCore {
       })
       .catch((error) => {});
 
-    // The new active tab should not auto-suspend.
-    this.cancelTabAutosuspensionTimer(tabId);
-    // Chrome's onActivated doesn't tell us which tab was deactivated, but we saw
-    // it leave the foreground, so only it needs a timer. Re-checking every
-    // background tab here is O(tabs) on each switch, which on its own makes a
-    // large session feel stuck.
-    if (this.lastActiveTabId && this.lastActiveTabId !== tabId) {
-      this.ensureTabAutosuspensionTimer(this.lastActiveTabId);
-    }
-    this.lastActiveTabId = tabId;
     // A tab suspended while the user was looking at it could not be discarded
     // yet; now that it is in the background, reclaim its renderer.
     this.discardInactiveSuspendedTabs();
