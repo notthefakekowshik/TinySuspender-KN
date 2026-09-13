@@ -219,3 +219,111 @@ test('onPluginInstalled leaves orphaned tabs alone without the opt-in', async ()
 
   assert.strictEqual(mock.calls.tabsUpdate.length, 0, 'adoption must stay off by default');
 });
+
+function foreignTab(id, active) {
+  return {
+    id,
+    active: !!active,
+    url: FOREIGN_ORIGIN + '/suspend.html?url=' + encodeURIComponent('https://example.com/' + id) + '&position=' + id,
+  };
+}
+
+test('adoption is paced so a large set does not flood the browser', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock();
+  mock.setTabs([foreignTab(1), foreignTab(2), foreignTab(3), foreignTab(4), foreignTab(5)]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+
+  let adopted = -1;
+  assert.strictEqual(core.adoptOrphanedSuspendedTabs((n) => { adopted = n; }), true);
+
+  await flush();
+  assert.strictEqual(mock.calls.tabsUpdate.length, 3, 'only the first batch should run up front');
+  assert.strictEqual(adopted, -1, 'the sweep must not finish in one burst');
+
+  t.mock.timers.tick(250);
+  await flush();
+
+  assert.strictEqual(mock.calls.tabsUpdate.length, 5, 'the remaining batch should run after the delay');
+  assert.strictEqual(adopted, 5, 'the callback reports the adopted count when the sweep finishes');
+});
+
+test('adoption leaves the active tab until last', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock();
+  mock.setTabs([foreignTab(1, true), foreignTab(2), foreignTab(3), foreignTab(4)]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+  core.adoptOrphanedSuspendedTabs(() => {});
+
+  await flush();
+  assert.deepStrictEqual(mock.calls.tabsUpdate.map((c) => c.id), [2, 3, 4],
+    'background tabs are adopted first');
+
+  t.mock.timers.tick(250);
+  await flush();
+  assert.deepStrictEqual(mock.calls.tabsUpdate.map((c) => c.id), [2, 3, 4, 1],
+    'the tab the user is looking at is adopted last');
+});
+
+test('a second adoption request is ignored while a sweep is running', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock();
+  mock.setTabs([foreignTab(1), foreignTab(2), foreignTab(3), foreignTab(4), foreignTab(5)]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+
+  let first = -1;
+  let second = -1;
+  assert.strictEqual(core.adoptOrphanedSuspendedTabs((n) => { first = n; }), true);
+  assert.strictEqual(core.adoptOrphanedSuspendedTabs((n) => { second = n; }), false,
+    'a sweep must not start while one is already running');
+
+  t.mock.timers.tick(250);
+  await flush();
+
+  assert.strictEqual(first, 5);
+  assert.strictEqual(second, -1, 'the ignored sweep must not run its callback');
+  assert.strictEqual(mock.calls.tabsUpdate.length, 5, 'each tab must be adopted exactly once');
+});
+
+test('the adopt message reports a running sweep instead of starting another', async (t) => {
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock();
+  mock.setTabs([foreignTab(1), foreignTab(2), foreignTab(3), foreignTab(4), foreignTab(5)]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+
+  let second;
+  core.adopt_orphaned_suspended_tabs({}, {}, () => {});
+  core.adopt_orphaned_suspended_tabs({}, {}, (response) => { second = response; });
+
+  assert.ok(second, 'a second request must be answered immediately');
+  assert.strictEqual(second.running, true);
+  assert.strictEqual(mock.calls.tabsUpdate.length, 3, 'the second request must not trigger extra adoptions');
+
+  t.mock.timers.tick(250);
+  await flush();
+  assert.strictEqual(mock.calls.tabsUpdate.length, 5);
+});
