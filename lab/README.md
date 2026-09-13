@@ -26,6 +26,25 @@ CHROME_PATH=/path/to/chromium node lab/memory-lab.js
 | alarm budget | How many `chrome.alarms` does the extension hold as tabs pile up? (Chrome caps an extension at 500.) |
 | diagnostics page | Does `diagnostics.html` render its environment table in a real browser? |
 
+## The 20-tab comparison (Brave 152, macOS, headless, Memory Saver disabled)
+
+Twenty tabs of the same page, measured live, then suspended the upstream way
+(URL swap only, discard paths neutralized), then suspended this fork's way
+(swap + discard) — same browser, same session, same pages.
+
+| 20 tabs | Live | Upstream suspension (swap only) | This fork (swap + discard) |
+| --- | --- | --- | --- |
+| Light pages | 3140 MB / 20 renderers | 3170 MB / 20 renderers | 418 MB / 0 renderers |
+| 50 MB pages | 4292 MB / 20 renderers | 4303 MB / 20 renderers | 426 MB / 0 renderers |
+| 200 MB pages | 7357 MB / 20 renderers | 7369 MB / 20 renderers | 422 MB / 0 renderers |
+
+Baseline (browser plus one control tab, no page tabs): 388 / 419 / 427 MB.
+Memory returned per suspended tab: 138 / 194 / 347 MB.
+
+The upstream algorithm leaves every renderer running — its suspended numbers
+land within noise of the live ones, and the placeholder pages even add a little.
+Discarding is what returns the memory.
+
 ## Findings (Brave 152, macOS, headless)
 
 | Question | Result |

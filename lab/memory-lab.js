@@ -258,6 +258,9 @@ async function launchBrowser(userDataDir) {
     '--no-default-browser-check',
     '--disable-sync',
     '--disable-background-networking',
+    // Keep the browser from discarding tabs on its own; that would silently
+    // reclaim memory in the middle of the comparison and hide the difference.
+    '--disable-features=MemorySaver,HighEfficiencyModeAvailable',
     '--window-size=1100,700',
   ];
 
@@ -509,6 +512,96 @@ async function stableStats(userDataDir, label) {
 
 // ---------------------------------------------------------------- scenarios ---
 
+async function closeAllExcept(cdp, swSession, keepTabId) {
+  await cdp.evaluate(swSession, `(async () => {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (tab.id === ${keepTabId}) continue;
+      try {
+        await chrome.tabs.remove(tab.id);
+      }
+      catch (error) {
+        // already gone
+      }
+    }
+    return true;
+  })()`);
+  await sleep(2000);
+}
+
+// The headline comparison: N tabs, first live, then suspended the way the
+// upstream extension does it (URL swap only), then suspended our way
+// (swap + discard). Same browser, same session, same pages.
+async function compareTabs(cdp, swSession, userDataDir, control, config) {
+  const {name, urlFor, count} = config;
+
+  console.log('');
+  console.log(`Comparison — ${name}: ${count} tabs live vs upstream vs ours`);
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+  const base = await stableStats(userDataDir, 'control tab only');
+
+  const tabIds = [];
+  for (let index = 0; index < count; index++) {
+    const tab = await openTab(cdp, swSession, urlFor(index));
+    tabIds.push(tab.tabId);
+  }
+
+  await activate(cdp, swSession, control.tabId);
+  await sleep(2000);
+
+  const live = await stableStats(userDataDir, `${count} live tabs`);
+  record(`compare-${name}`, `baseline (browser + control tab)`, `${base.rssMb} MB`);
+  record(`compare-${name}`, `${count} live tabs`, `${live.rssMb} MB (${live.renderers - base.renderers} renderers)`);
+  record(`compare-${name}`, `per live tab`, `${Math.round((live.rssMb - base.rssMb) / count)} MB`);
+
+  // Neutralize the discard paths to reproduce the upstream algorithm exactly:
+  // the tab is sent to the suspend page, but nothing ever discards it.
+  await cdp.evaluate(swSession, `(() => {
+    ts.discardSuspendedTab = () => {};
+    ts.discardInactiveSuspendedTabs = () => {};
+    return true;
+  })()`);
+
+  await cdp.evaluate(swSession, `(async () => {
+    for (const id of ${JSON.stringify(tabIds)}) {
+      try {
+        const tab = await chrome.tabs.get(id);
+        await chrome.tabs.update(id, {
+          url: 'suspend.html?url=' + encodeURIComponent(tab.url) + '&title=' + encodeURIComponent(tab.title),
+        });
+      }
+      catch (error) {
+        // tab id changed underneath us
+      }
+    }
+    return true;
+  })()`);
+
+  await sleep(3000);
+  const upstream = await stableStats(userDataDir, `${count} suspended the upstream way`);
+  record(`compare-${name}`, `${count} suspended — upstream (swap only)`,
+    `${upstream.rssMb} MB (${upstream.renderers - base.renderers} renderers)`);
+  record(`compare-${name}`, `reclaimed by upstream suspension`, `${live.rssMb - upstream.rssMb} MB`);
+
+  // Put our discard paths back and let the extension sweep them.
+  await cdp.evaluate(swSession, `(() => {
+    delete ts.discardSuspendedTab;
+    delete ts.discardInactiveSuspendedTabs;
+    return true;
+  })()`);
+  await cdp.evaluate(swSession, `(async () => { ts.discardInactiveSuspendedTabs(); return true; })()`);
+
+  await sleep(3000);
+  const ours = await stableStats(userDataDir, `${count} suspended our way`);
+  record(`compare-${name}`, `${count} suspended — ours (swap + discard)`,
+    `${ours.rssMb} MB (${ours.renderers - base.renderers} renderers)`);
+  record(`compare-${name}`, `reclaimed by our suspension`, `${live.rssMb - ours.rssMb} MB`);
+  record(`compare-${name}`, `our advantage over upstream`, `${upstream.rssMb - ours.rssMb} MB`);
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+}
+
 async function main() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiny-suspender-lab-'));
   const server = await startServer();
@@ -749,6 +842,25 @@ async function main() {
 
     record('alarm budget', 'alarms used by the whole extension',
       `${alarmsBefore} before, ${alarmsAfter} with ${tabsNow} tabs open (cap is 500)`);
+
+    // --- 8. the headline comparison -----------------------------------------
+    await compareTabs(cdp, swSession, userDataDir, control, {
+      name: 'light pages',
+      count: 20,
+      urlFor: (index) => `${BASE_A}/static?tag=cmp-light-${index}`,
+    });
+
+    await compareTabs(cdp, swSession, userDataDir, control, {
+      name: '50 MB pages',
+      count: 20,
+      urlFor: (index) => `${BASE_A}/heavy?mb=50&tag=cmp-50-${index}`,
+    });
+
+    await compareTabs(cdp, swSession, userDataDir, control, {
+      name: '200 MB pages',
+      count: 20,
+      urlFor: (index) => `${BASE_A}/heavy?mb=200&tag=cmp-200-${index}`,
+    });
 
     // --- summary ------------------------------------------------------------
     console.log('');
