@@ -12,10 +12,15 @@ const DISCARD_BATCH_DELAY_MS = 200;
 
 // A placeholder is only discarded to reclaim its renderer, but discarding it
 // before suspend.js has run leaves the tab showing the static page's title and
-// the extension's own power icon — which is what every auto-suspended tab used
-// to look like. Hold the discard briefly so the page can apply the site title
-// and favicon first.
-const SUSPEND_RENDER_GRACE_MS = 1500;
+// the extension's own power icon. The page reports in once it has applied them
+// (ts_suspend_page_ready) and the discard follows; this timeout is the fallback
+// for a page that never reports, so a renderer is never held indefinitely.
+const SUSPEND_READY_TIMEOUT_MS = 5000;
+
+// Repairing a placeholder's icon means reloading it so suspend.js runs again —
+// a renderer per tab, so it is paced like the other sweeps.
+const REPAIR_BATCH_SIZE = 3;
+const REPAIR_BATCH_DELAY_MS = 250;
 
 // Auto-suspension runs off a single periodic alarm that scans for idle tabs.
 // The earlier model created one alarm per background tab, which Chrome caps at
@@ -69,9 +74,13 @@ class TinySuspenderCore {
     this.discardInProgress = false;
     this.discardPending = false;
 
-    // Pending per-tab discards, held back so a placeholder can render itself
-    // first — see SUSPEND_RENDER_GRACE_MS.
+    // Pending per-tab discards, held back until the placeholder reports it has
+    // rendered itself — see SUSPEND_READY_TIMEOUT_MS.
     this.discardTimers = {};
+
+    // Guards the paced icon-repair sweep the dashboard starts.
+    this.repairInProgress = false;
+    this.repairStats = null;
 
     // Fallback idle clock for a browser that does not report tabs.Tab.lastAccessed.
     this.fallbackIdleSince = {};
@@ -882,22 +891,77 @@ class TinySuspenderCore {
   }
 
   // A tab has landed on the suspend page. Reclaiming its renderer means
-  // discarding it — but not before the placeholder has applied its title and
-  // favicon, or the tab is left showing the static page's "Suspended" title and
-  // the extension's power icon. Re-scheduling replaces the earlier timer, so a
-  // burst of update events for one tab still discards it exactly once.
+  // discarding it — but only once the placeholder has applied its title and
+  // favicon, or the tab is left with the static page's "Suspended" title and the
+  // extension's power icon. The page calls back with ts_suspend_page_ready; this
+  // timeout is the fallback for one that never does, so a renderer is never held
+  // indefinitely. Re-scheduling replaces the earlier timer, so a burst of update
+  // events for one tab still discards it exactly once.
   scheduleDiscardSuspendedTab(tabId) {
     this.cancelDiscardSuspendedTab(tabId);
     this.discardTimers[tabId] = setTimeout(() => {
       delete this.discardTimers[tabId];
       this.discardSuspendedTab(tabId);
-    }, SUSPEND_RENDER_GRACE_MS);
+    }, SUSPEND_READY_TIMEOUT_MS);
   }
 
   cancelDiscardSuspendedTab(tabId) {
     if (this.discardTimers[tabId] === undefined) return;
     clearTimeout(this.discardTimers[tabId]);
     delete this.discardTimers[tabId];
+  }
+
+  // A placeholder discarded before suspend.js ran keeps the default title and
+  // power icon for good, because Chrome stores a tab's favicon at discard time.
+  // Reloading it makes the page render once more, and the normal discard then
+  // takes the renderer back with the site icon recorded. Ours is a data: url
+  // from the dimmed canvas, so a tab already carrying one needs no repair.
+  needsIconRepair(tab) {
+    if (!tab || tab.active || !this.isSuspendedUrl(tab.url)) return false;
+    return !(tab.favIconUrl || '').startsWith('data:');
+  }
+
+  repairSuspendedTabIcons(callback) {
+    if (this.repairInProgress) return false;
+    this.repairInProgress = true;
+
+    this.chrome.tabs.query({}, (tabs) => {
+      let candidates = tabs.filter((tab) => this.needsIconRepair(tab));
+      this.repairStats = {total: candidates.length, processed: 0};
+
+      if (!candidates.length) {
+        this.repairInProgress = false;
+        if (callback) callback(this.repairStats);
+        return;
+      }
+
+      let index = 0;
+
+      let step = () => {
+        let batch = candidates.slice(index, index + REPAIR_BATCH_SIZE);
+        index += batch.length;
+
+        batch.forEach((tab) => {
+          // Mark it pending before reloading: the discard sweep leaves a pending
+          // tab alone, so it gets to render instead of being reclaimed mid-load.
+          this.scheduleDiscardSuspendedTab(tab.id);
+          this.chrome.tabs.reload(tab.id, () => { void this.chrome.runtime.lastError; });
+          this.repairStats.processed++;
+        });
+
+        if (index < candidates.length) {
+          setTimeout(step, REPAIR_BATCH_DELAY_MS);
+          return;
+        }
+
+        this.repairInProgress = false;
+        if (callback) callback(this.repairStats);
+      };
+
+      step();
+    });
+
+    return true;
   }
 
   // Chrome refuses to discard the active tab, so a tab suspended while the user
@@ -1359,6 +1423,22 @@ class TinySuspenderCore {
 
   reclaim_status(request, sender, sendResponse) {
     sendResponse({running: this.reclaimInProgress, stats: this.reclaimStats});
+  }
+
+  // The suspend page reports that it has applied its title and favicon, so the
+  // placeholder can be discarded now without losing them.
+  suspend_page_ready(request, sender, sendResponse) {
+    if (sender && sender.tab) {
+      this.discardSuspendedTab(sender.tab.id);
+    }
+  }
+
+  repair_suspended_tab_icons(request, sender, sendResponse) {
+    sendResponse({started: this.repairSuspendedTabIcons(() => {})});
+  }
+
+  repair_status(request, sender, sendResponse) {
+    sendResponse({running: this.repairInProgress, stats: this.repairStats});
   }
 
   get_tab_state(request, sender, sendResponse) {

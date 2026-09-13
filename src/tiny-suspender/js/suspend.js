@@ -101,7 +101,10 @@ class TinySuspenderSuspend {
     let trySource = () => {
       // Without a favicon the tab keeps Chrome's default for this page, which
       // is the extension's power icon.
-      if (next >= sources.length) return;
+      if (next >= sources.length) {
+        this.notifyReady();
+        return;
+      }
 
       let source = sources[next++];
       let img = new Image();
@@ -109,12 +112,20 @@ class TinySuspenderSuspend {
       img.onload = () => {
         this.setPageIcon(source);
         this.setBrowserTabIcon(img, source);
+        this.notifyReady();
       };
       img.onerror = trySource;
       img.src = source;
     };
 
     trySource();
+  }
+
+  // Tell the worker the placeholder has applied its title and favicon, so its
+  // renderer can be discarded without the tab losing them. The worker also has a
+  // timeout, in case this never arrives.
+  notifyReady() {
+    this.chrome.runtime.sendMessage({command: 'ts_suspend_page_ready'});
   }
 
   setPageIcon(source) {
