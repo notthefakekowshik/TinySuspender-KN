@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tiny Suspender: Memory Dashboard</title>
+  <link rel="stylesheet" type="text/css" href="css/settings.css">
+  <link rel="stylesheet" type="text/css" href="css/settings-dark.css">
+  <style>
+    table.dashboard { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+    table.dashboard td { padding: 4px 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.3); vertical-align: top; }
+    table.dashboard td:first-child { white-space: nowrap; opacity: 0.75; }
+    table.dashboard th { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.5); }
+    .dashboard-note { display: block; opacity: 0.7; margin: 6px 0 12px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">Tiny Suspender <span id="version_string"></span> &mdash; Memory Dashboard</div>
+
+    <h2>Summary</h2>
+    <table class="dashboard" id="summary"></table>
+
+    <h2>Top domains by suspended tabs</h2>
+    <small class="dashboard-note">Hostname taken from each suspended tab's original page, most-suspended first. Listed as domain, then suspended-tab count.</small>
+    <table class="dashboard" id="domains"></table>
+
+    <h2>Why the memory figure is an estimate</h2>
+    <small class="dashboard-note" id="estimate_note">
+      The <strong>estimated memory reclaimed</strong> figure is an estimate, not a measurement. Per-tab
+      memory is not measurable from an extension: the only API that reports per-process memory,
+      <code>chrome.processes</code>, is Dev-channel only and stays unavailable on stable Chrome or Brave
+      (see Diagnostics). The figure is therefore the suspended-tab count multiplied by a flat
+      150&nbsp;MB-per-tab constant &mdash; a rough stand-in for the renderer a suspension reclaims, whose real
+      footprint varies with the page.
+    </small>
+  </div>
+  <script type="text/javascript" src="js/dashboard.js"></script>
+</body>
+</html>
