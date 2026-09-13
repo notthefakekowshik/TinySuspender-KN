@@ -48,7 +48,9 @@ pasted into the import box.
 When a previous install is still present and holding suspended tabs, the new install can
 take them over with **Adopt Suspended Tabs From Another Install** (also offered in the
 popup when orphaned tabs are detected), or automatically by enabling the opt-in in
-Settings.
+Settings. Adoption is deliberately paced — each tab is navigated — so the sweep runs in
+small batches and shows progress; for a large set run it from the Settings page and leave
+that page open until it finishes.
 
 ## Notes
 

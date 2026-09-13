@@ -19,7 +19,9 @@ When you bump the version, add a section here in the same commit.
   importer accepts suspend urls recovered from History or a "Bookmark all tabs" dump when
   the tabs were already closed.
 - Suspended tabs held by another install can be adopted in one click (popup or Settings),
-  re-homing them onto this install with their params intact so they stay suspended. On
+  re-homing them onto this install with their params intact so they stay suspended. The
+  sweep is paced in small batches — each adoption is a navigation — so a large set no
+  longer floods the browser; progress is shown and the active tab is adopted last. On
   startup it is opt-in, so a still-installed build is never hijacked.
 
 ## 2.4.0 — 2026-09-13 (branch: `lab-and-diagnostics`)
