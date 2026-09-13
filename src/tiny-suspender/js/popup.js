@@ -313,10 +313,24 @@ class TinySuspenderPopup {
   onAdoptOrphans(e) {
     this.log('onAdoptOrphans');
 
-    this.chrome.runtime.sendMessage({command: "ts_adopt_orphaned_suspended_tabs"}, () => {
-      setTimeout(() => {
-        window.close();
-      }, 100);
+    let button = document.querySelector('.adopt-orphans-btn');
+    button.style.pointerEvents = 'none';
+    button.textContent = 'Adopting…';
+
+    // Core paces the sweep, so keep the popup open and show progress rather than
+    // closing it straight away. The options page is the better place for a big
+    // set, since a popup can be dismissed mid-sweep.
+    let poll = setInterval(() => {
+      this.chrome.runtime.sendMessage({command: "ts_count_orphaned_suspended_tabs"}, (response) => {
+        let remaining = (response && response.count) || 0;
+        button.textContent = remaining ? 'Adopting… ' + remaining + ' left' : 'Adopting…';
+      });
+    }, 500);
+
+    this.chrome.runtime.sendMessage({command: "ts_adopt_orphaned_suspended_tabs"}, (response) => {
+      clearInterval(poll);
+      let adopted = (response && response.adopted) || 0;
+      button.textContent = 'Adopted ' + adopted + ' suspended tab(s).';
     });
   }
 

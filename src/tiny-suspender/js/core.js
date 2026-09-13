@@ -1,3 +1,11 @@
+// Adopting a tab navigates it, which reloads the suspend page and is then
+// discarded. Firing a whole set at once floods the browser with renderer churn
+// (memory stays low, but the UI can appear to hang), so the sweep runs in small
+// batches instead.
+const ADOPT_BATCH_SIZE = 3;
+const ADOPT_BATCH_DELAY_MS = 250;
+
+
 class TinySuspenderCore {
 
   constructor() {
@@ -10,6 +18,11 @@ class TinySuspenderCore {
     this.tabState = {};
     this.tabScrolls = {};
     this.excludedDomains = {};
+
+    // Guards the paced adoption sweep so a second request cannot start a
+    // parallel sweep over the same tabs.
+    this.adoptInProgress = false;
+    this.adoptCount = 0;
 
     this.idleTimeMinutes = 30;
     this.whitelist = [];
@@ -627,14 +640,48 @@ class TinySuspenderCore {
     return true;
   }
 
-  adoptOrphanedSuspendedTabs(callback) {
+  listOrphanedSuspendedTabs(callback) {
     this.chrome.tabs.query({}, (tabs) => {
-      let adopted = 0;
-      tabs.forEach((tab) => {
-        if (this.adoptSuspendedTab(tab)) adopted++;
-      });
-      if (callback) callback(adopted);
+      let orphans = tabs.filter((tab) => this.isSuspendPageUrl(tab.url) && !this.isSuspendedUrl(tab.url));
+
+      // Background tabs first: navigating the tab the user is looking at
+      // half-way through the sweep is jarring, so it is adopted last.
+      orphans.sort((a, b) => (a.active ? 1 : 0) - (b.active ? 1 : 0));
+
+      callback(orphans);
     });
+  }
+
+  // Paced on purpose — see ADOPT_BATCH_SIZE. Returns false when a sweep is
+  // already running, so callers can tell the request was ignored.
+  adoptOrphanedSuspendedTabs(callback) {
+    if (this.adoptInProgress) return false;
+
+    this.adoptInProgress = true;
+    this.adoptCount = 0;
+
+    this.listOrphanedSuspendedTabs((orphans) => {
+      let index = 0;
+
+      let step = () => {
+        let limit = Math.min(index + ADOPT_BATCH_SIZE, orphans.length);
+        for (; index < limit; index++) {
+          if (this.adoptSuspendedTab(orphans[index])) this.adoptCount++;
+        }
+
+        if (index < orphans.length) {
+          setTimeout(step, ADOPT_BATCH_DELAY_MS);
+          return;
+        }
+
+        this.adoptInProgress = false;
+        if (callback) callback(this.adoptCount);
+      };
+
+      step();
+    });
+
+    return true;
   }
 
   countOrphanedSuspendedTabs(callback) {
@@ -971,7 +1018,8 @@ class TinySuspenderCore {
   }
 
   adopt_orphaned_suspended_tabs(request, sender, sendResponse) {
-    this.adoptOrphanedSuspendedTabs((adopted) => sendResponse({adopted: adopted}));
+    let started = this.adoptOrphanedSuspendedTabs((adopted) => sendResponse({adopted: adopted}));
+    if (!started) sendResponse({adopted: this.adoptCount, running: true});
     return true;
   }
 

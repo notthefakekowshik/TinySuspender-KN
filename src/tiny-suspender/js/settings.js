@@ -198,12 +198,39 @@ let onExportTabs = () => {
   });
 };
 
+let adoptRunning = false;
+
+// Adoption navigates every tab, so core paces the sweep. Keep this page open
+// while it runs and report progress, otherwise a large set looks like a freeze.
 let onAdoptTabs = () => {
-  chrome.runtime.sendMessage({command: 'ts_adopt_orphaned_suspended_tabs'}, (response) => {
-    let adopted = (response && response.adopted) || 0;
-    document.querySelector('#migration_message').textContent = adopted
-      ? 'Adopted ' + adopted + ' suspended tab(s) from another install.'
-      : 'No suspended tabs from another install were found.';
+  if (adoptRunning) return;
+  adoptRunning = true;
+
+  let button = document.querySelector('#adopt_tabs');
+  let message = document.querySelector('#migration_message');
+  button.disabled = true;
+  message.textContent = 'Adopting…';
+
+  chrome.runtime.sendMessage({command: 'ts_count_orphaned_suspended_tabs'}, (countResponse) => {
+    let total = (countResponse && countResponse.count) || 0;
+
+    let poll = setInterval(() => {
+      chrome.runtime.sendMessage({command: 'ts_count_orphaned_suspended_tabs'}, (response) => {
+        let remaining = (response && response.count) || 0;
+        message.textContent = 'Adopting… ' + (total - remaining) + ' of ' + total + ' done.';
+      });
+    }, 500);
+
+    chrome.runtime.sendMessage({command: 'ts_adopt_orphaned_suspended_tabs'}, (response) => {
+      clearInterval(poll);
+      adoptRunning = false;
+      button.disabled = false;
+
+      let adopted = (response && response.adopted) || 0;
+      message.textContent = adopted
+        ? 'Adopted ' + adopted + ' suspended tab(s) from another install.'
+        : 'No suspended tabs from another install were found.';
+    });
   });
 };
 
