@@ -24,6 +24,14 @@ When you bump the version, add a section here in the same commit.
   longer floods the browser; progress is shown and the active tab is adopted last. On
   startup it is opt-in, so a still-installed build is never hijacked.
 
+### Large-session scaling (branch: `scale-fixes`)
+
+- Discarding suspended tabs is paced like adoption, so startup no longer fires a discard
+  at every suspended tab in one pass.
+- Switching tabs no longer re-checks every background tab for a suspension timer. Only the
+  tab that just left the foreground is checked, removing an O(tabs) cost from every switch
+  that made a few-hundred-tab session feel stuck.
+
 ## 2.4.0 — 2026-09-13 (branch: `lab-and-diagnostics`)
 
 - Suspension now discards the suspend placeholder, which is what actually reclaims memory
