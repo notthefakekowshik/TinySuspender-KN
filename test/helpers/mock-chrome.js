@@ -44,6 +44,7 @@ function makeChromeMock(initial = {}) {
   const calls = {
     alarmsCreate: [],
     alarmsClear: [],
+    alarmsGet: [],
     tabsUpdate: [],
     tabsCreate: [],
     tabsDiscard: [],
@@ -138,7 +139,10 @@ function makeChromeMock(initial = {}) {
         const had = alarms.delete(name);
         if (cb) cb(had);
       },
-      get: (name, cb) => setImmediate(() => cb(alarms.get(name))),
+      get: (name, cb) => {
+        calls.alarmsGet.push(name);
+        setImmediate(() => cb(alarms.get(name)));
+      },
       onAlarm: { addListener: hubs.onAlarm.addListener },
     },
     contextMenus: {

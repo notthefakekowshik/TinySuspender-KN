@@ -430,3 +430,63 @@ test('icon contract: every documented state maps to its intended icon', async ()
       `state '${state}' should map to ${file}, got ${last && last.path}`);
   }
 });
+
+test('switching tabs does not re-scan every background tab for alarms', async () => {
+  // Regression: onTabActivated called initTimersForBackgroundTabs, which issued
+  // one chrome.alarms.get per background tab on every switch. At a few hundred
+  // tabs that alone made the browser feel stuck. Only the tab that just left the
+  // foreground needs a timer, and we know which one that was.
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
+  const tabs = [];
+  for (let id = 1; id <= 40; id++) {
+    tabs.push({ id, active: false, url: 'https://example.com/' + id, title: 'Tab ' + id });
+  }
+  tabs.push({ id: 41, active: true, url: 'https://example.com/active', title: 'Active' });
+  mock.setTabs(tabs);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.alarmsGet.length = 0;
+  mock.calls.alarmsCreate.length = 0;
+  mock.fire.onActivated({ tabId: 2, windowId: 1 });
+  await flush();
+
+  assert.ok(mock.calls.alarmsGet.length <= 1,
+    `activation should only check the tab that left the foreground, checked ${mock.calls.alarmsGet.length}`);
+  assert.ok(mock.calls.alarmsCreate.some((c) => c.name === '41'),
+    'the tab that just went to the background should get its timer');
+});
+
+test('discarding inactive suspended tabs is paced', async (t) => {
+  // Regression: startup discarded every suspended tab in one pass, churning a
+  // renderer per tab at once. A large session looked like a freeze.
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
+  const tabs = [];
+  for (let id = 1; id <= 12; id++) {
+    tabs.push({
+      id,
+      active: false,
+      url: 'chrome-extension://test-extension-id/suspend.html?url=' + encodeURIComponent('https://example.com/' + id),
+      title: 'Tab ' + id,
+    });
+  }
+  mock.setTabs(tabs);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  assert.strictEqual(mock.calls.tabsDiscard.length, 5, 'only the first batch is discarded up front');
+
+  t.mock.timers.tick(200);
+  await flush();
+  assert.strictEqual(mock.calls.tabsDiscard.length, 10, 'the second batch follows after the delay');
+
+  t.mock.timers.tick(200);
+  await flush();
+  assert.strictEqual(mock.calls.tabsDiscard.length, 12, 'the last batch finishes the sweep');
+});
