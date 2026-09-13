@@ -127,6 +127,24 @@ reports a *new* tab id afterwards — and fires no events for the change. Never
 hold a tab id across a discard; look it up again with a fresh tabs.query.
 
 
+Auto-suspension scheduling
+--------------------------
+Auto-suspension used to create one chrome.alarms alarm per background tab, named
+by tab id. Chrome caps an extension at 500 alarms, so a session with more
+background tabs than that silently stopped getting timers for the rest, and
+restoring a session issued a chrome.alarms.get (and usually a create) for every
+restored tab.
+
+It now runs from a single periodic alarm (`ts-autosuspend`, every minute) that
+scans background tabs once per tick. Idleness comes from `tabs.Tab.lastAccessed`,
+so nothing has to be tracked per tab and the clock survives a worker restart; a
+storage.session fallback covers a browser that does not report it. Each tick
+suspends at most a bounded number of tabs, because every suspension navigates a
+tab — the remainder are picked up on later ticks. Whether a tab *should* be
+suspended (whitelist, unsaved form data, offline, audible, pinned) is still
+decided per tab inside the suspend path, so scheduling and policy stay separate.
+
+
 Page Agent (MAIN world)
 -----------------------
 `js/page-agent.js` runs in the page's own context at document_start, before any

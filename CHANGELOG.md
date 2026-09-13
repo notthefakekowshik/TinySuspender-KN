@@ -7,6 +7,18 @@ before being merged.
 
 When you bump the version, add a section here in the same commit.
 
+## 2.5.1 — 2026-09-13 (branch: `alarm-scheduler`)
+
+- Auto-suspension now runs from a single one-minute alarm that scans for idle tabs, instead of one
+  alarm per background tab. Chrome caps an extension at 500 alarms, so past roughly that many tabs
+  the old model silently stopped scheduling suspensions — and restoring a session created one alarm
+  (and one `chrome.alarms.get`) per tab.
+- A tab counts as idle from `tabs.Tab.lastAccessed`, so no per-tab timers are needed and the clock
+  survives a worker restart. Suspensions are capped per tick, so a large idle set drains gradually
+  instead of navigating hundreds of tabs at once.
+- Diagnostics reports the scheduler instead of listing every alarm, and `Live (not suspended)` no
+  longer goes negative: our own suspended tabs are discarded too, so they were being subtracted twice.
+
 ## 2.5.0 — 2026-09-13 (branches: `install-migration`, `adopt-throttle`, `scale-fixes`)
 
 ### Cross-install migration (branch: `install-migration`)
