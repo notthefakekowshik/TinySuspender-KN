@@ -5,6 +5,11 @@
 const ADOPT_BATCH_SIZE = 3;
 const ADOPT_BATCH_DELAY_MS = 250;
 
+// Discarding reclaims a renderer, so a large set discarded at once churns
+// processes just like adopting does. Pace it too.
+const DISCARD_BATCH_SIZE = 5;
+const DISCARD_BATCH_DELAY_MS = 200;
+
 
 class TinySuspenderCore {
 
@@ -23,6 +28,15 @@ class TinySuspenderCore {
     // parallel sweep over the same tabs.
     this.adoptInProgress = false;
     this.adoptCount = 0;
+
+    // Guards the paced discard sweep; a request that arrives mid-sweep is
+    // replayed once it finishes rather than dropped.
+    this.discardInProgress = false;
+    this.discardPending = false;
+
+    // Chrome's onActivated does not say which tab was deactivated, so we track
+    // it ourselves instead of re-checking every background tab on each switch.
+    this.lastActiveTabId = null;
 
     this.idleTimeMinutes = 30;
     this.whitelist = [];
@@ -522,9 +536,17 @@ class TinySuspenderCore {
       .then((settings) => {
         if (settings.idleTimeMinutes == 0) return;
         // The alarm handler re-checks isAutoSuspendable when it fires, so we don't
-        // need to query each tab's state here — just ensure an alarm exists.
-        this.chrome.tabs.query({ active: false }, (tabs) => {
-          tabs.forEach((tab) => this.ensureTabAutosuspensionTimer(tab.id));
+        // need to query each tab's state here — just ensure an alarm exists. The
+        // active tab is remembered rather than given a timer: it only needs one
+        // once it leaves the foreground, which onTabActivated handles without a scan.
+        this.chrome.tabs.query({}, (tabs) => {
+          tabs.forEach((tab) => {
+            if (tab.active) {
+              this.lastActiveTabId = tab.id;
+              return;
+            }
+            this.ensureTabAutosuspensionTimer(tab.id);
+          });
         });
       })
       .catch((error) => {});
@@ -749,13 +771,41 @@ class TinySuspenderCore {
   }
 
   // Chrome refuses to discard the active tab, so a tab suspended while the user
-  // was looking at it gets discarded here once it goes to the background.
+  // was looking at it gets discarded here once it goes to the background. Paced
+  // for the same reason as adoption: discarding a large set at once churns
+  // processes. A request that lands mid-sweep is replayed, not dropped.
   discardInactiveSuspendedTabs() {
+    if (this.discardInProgress) {
+      this.discardPending = true;
+      return;
+    }
+
     this.chrome.tabs.query({active: false}, (tabs) => {
-      tabs.forEach((tab) => {
-        if (tab.discarded || !this.isSuspendedUrl(tab.url)) return;
-        this.chrome.tabs.discard(tab.id, () => { void this.chrome.runtime.lastError; });
-      });
+      let pending = tabs.filter((tab) => !tab.discarded && this.isSuspendedUrl(tab.url));
+      if (!pending.length) return;
+
+      this.discardInProgress = true;
+      let index = 0;
+
+      let step = () => {
+        let limit = Math.min(index + DISCARD_BATCH_SIZE, pending.length);
+        for (; index < limit; index++) {
+          this.chrome.tabs.discard(pending[index].id, () => { void this.chrome.runtime.lastError; });
+        }
+
+        if (index < pending.length) {
+          setTimeout(step, DISCARD_BATCH_DELAY_MS);
+          return;
+        }
+
+        this.discardInProgress = false;
+        if (this.discardPending) {
+          this.discardPending = false;
+          this.discardInactiveSuspendedTabs();
+        }
+      };
+
+      step();
     });
   }
 
@@ -991,10 +1041,14 @@ class TinySuspenderCore {
 
     // The new active tab should not auto-suspend.
     this.cancelTabAutosuspensionTimer(tabId);
-    // Chrome's onActivated doesn't tell us which tab was deactivated, so we
-    // ensure alarms for all background tabs. ensureTabAutosuspensionTimer is
-    // cheap on tabs that already have an alarm (one chrome.alarms.get call).
-    this.initTimersForBackgroundTabs();
+    // Chrome's onActivated doesn't tell us which tab was deactivated, but we saw
+    // it leave the foreground, so only it needs a timer. Re-checking every
+    // background tab here is O(tabs) on each switch, which on its own makes a
+    // large session feel stuck.
+    if (this.lastActiveTabId && this.lastActiveTabId !== tabId) {
+      this.ensureTabAutosuspensionTimer(this.lastActiveTabId);
+    }
+    this.lastActiveTabId = tabId;
     // A tab suspended while the user was looking at it could not be discarded
     // yet; now that it is in the background, reclaim its renderer.
     this.discardInactiveSuspendedTabs();
