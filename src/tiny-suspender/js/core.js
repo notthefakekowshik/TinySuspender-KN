@@ -10,6 +10,13 @@ const ADOPT_BATCH_DELAY_MS = 250;
 const DISCARD_BATCH_SIZE = 5;
 const DISCARD_BATCH_DELAY_MS = 200;
 
+// A placeholder is only discarded to reclaim its renderer, but discarding it
+// before suspend.js has run leaves the tab showing the static page's title and
+// the extension's own power icon — which is what every auto-suspended tab used
+// to look like. Hold the discard briefly so the page can apply the site title
+// and favicon first.
+const SUSPEND_RENDER_GRACE_MS = 1500;
+
 // Auto-suspension runs off a single periodic alarm that scans for idle tabs.
 // The earlier model created one alarm per background tab, which Chrome caps at
 // 500 per extension — so a large session silently stopped getting timers past
@@ -61,6 +68,10 @@ class TinySuspenderCore {
     // replayed once it finishes rather than dropped.
     this.discardInProgress = false;
     this.discardPending = false;
+
+    // Pending per-tab discards, held back so a placeholder can render itself
+    // first — see SUSPEND_RENDER_GRACE_MS.
+    this.discardTimers = {};
 
     // Fallback idle clock for a browser that does not report tabs.Tab.lastAccessed.
     this.fallbackIdleSince = {};
@@ -863,10 +874,30 @@ class TinySuspenderCore {
   // lab/memory-lab.js measures ~0 MB from the swap alone and ~347 MB for a
   // 200 MB page once the tab is discarded.
   discardSuspendedTab(tabId) {
+    this.cancelDiscardSuspendedTab(tabId);
     this.chrome.tabs.get(tabId, (tab) => {
       if (!tab || tab.active || tab.discarded || !this.isSuspendedUrl(tab.url)) return;
       this.chrome.tabs.discard(tabId, () => { void this.chrome.runtime.lastError; });
     });
+  }
+
+  // A tab has landed on the suspend page. Reclaiming its renderer means
+  // discarding it — but not before the placeholder has applied its title and
+  // favicon, or the tab is left showing the static page's "Suspended" title and
+  // the extension's power icon. Re-scheduling replaces the earlier timer, so a
+  // burst of update events for one tab still discards it exactly once.
+  scheduleDiscardSuspendedTab(tabId) {
+    this.cancelDiscardSuspendedTab(tabId);
+    this.discardTimers[tabId] = setTimeout(() => {
+      delete this.discardTimers[tabId];
+      this.discardSuspendedTab(tabId);
+    }, SUSPEND_RENDER_GRACE_MS);
+  }
+
+  cancelDiscardSuspendedTab(tabId) {
+    if (this.discardTimers[tabId] === undefined) return;
+    clearTimeout(this.discardTimers[tabId]);
+    delete this.discardTimers[tabId];
   }
 
   // Chrome refuses to discard the active tab, so a tab suspended while the user
@@ -880,7 +911,11 @@ class TinySuspenderCore {
     }
 
     this.chrome.tabs.query({active: false}, (tabs) => {
-      let pending = tabs.filter((tab) => !tab.discarded && this.isSuspendedUrl(tab.url));
+      // Skip a tab still inside its render grace: its own timer will discard it,
+      // and discarding now would beat the placeholder's render.
+      let pending = tabs.filter((tab) => !tab.discarded
+        && this.isSuspendedUrl(tab.url)
+        && this.discardTimers[tab.id] === undefined);
       if (!pending.length) return;
 
       this.discardInProgress = true;
@@ -1211,9 +1246,13 @@ class TinySuspenderCore {
 
     // Safety net for every path that lands a tab on the suspend page (manual,
     // automatic, context menu, autorestore): the swap alone frees nothing, the
-    // discard is what returns the memory.
-    if (changeInfo.url !== undefined || changeInfo.status === 'complete') {
-      this.discardSuspendedTab(tabId);
+    // discard is what returns the memory. It is scheduled rather than immediate
+    // so the placeholder can render its title and favicon first — see
+    // SUSPEND_RENDER_GRACE_MS. The sweep on tab activation is the fallback if
+    // this worker is torn down before the timer fires.
+    let landedUrl = changeInfo.url !== undefined ? changeInfo.url : (tab && tab.url);
+    if ((changeInfo.url !== undefined || changeInfo.status === 'complete') && this.isSuspendedUrl(landedUrl)) {
+      this.scheduleDiscardSuspendedTab(tabId);
     }
 
     // Only refresh the icon for the active tab, and only on changes that can flip state.
@@ -1232,6 +1271,7 @@ class TinySuspenderCore {
   }
 
   onTabRemoved(tabId, removeInfo) {
+    this.cancelDiscardSuspendedTab(tabId);
     if (this.tabState[tabId]) {
       delete this.tabState[tabId];
       this.saveState();
@@ -1245,6 +1285,13 @@ class TinySuspenderCore {
 
   onTabActivated(activeInfo) {
     let tabId = activeInfo.tabId;
+
+    // The user is looking at this tab now. A pending discard would be refused
+    // while it is active anyway; cancelling it keeps the placeholder rendered
+    // for as long as it is in the foreground, so it can show the site icon and
+    // still be clicked to restore.
+    this.cancelDiscardSuspendedTab(tabId);
+
     this.getTabState(tabId)
       .then((state) => {
         this.setIconFromStateString(state.state, tabId);
