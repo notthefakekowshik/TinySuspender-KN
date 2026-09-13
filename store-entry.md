@@ -36,7 +36,7 @@ Chrome Permissions used in this extension:
 
 - alarm: allows centralized and more reliable autosuspension timer
 
-- chrome://favicon/* : allows retrieving suspended page's favicon.
+- favicon: allows retrieving suspended page's favicon.
 
 --------------------------------
 

@@ -37,7 +37,7 @@
       "matches": ["<all_urls>"]
     }
   ],
-  "permissions": ["tabs", "contextMenus", "storage", "alarms"],
+  "permissions": ["tabs", "contextMenus", "storage", "alarms", "favicon"],
   "optional_permissions": ["processes"],
   "incognito": "split",
   "commands": {
