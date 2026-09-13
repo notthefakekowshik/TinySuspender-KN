@@ -7,6 +7,19 @@ before being merged.
 
 When you bump the version, add a section here in the same commit.
 
+## 2.7.1 — 2026-09-13 (branch: `discard-render-grace`)
+
+- A suspended placeholder is no longer discarded the instant its URL commits. The discard is what
+  reclaims the renderer, but firing it before the placeholder had run left every suspended tab
+  showing the static page's `Suspended` title and the extension's own power icon instead of the
+  site's title and favicon — which made the extension look like an older build, and got worse after
+  a restart, when every placeholder is reloaded at once. The discard is now held briefly
+  (1.5 s) so the page can apply its title and icon first, still re-scheduled rather than doubled,
+  and cancelled outright while the tab is in the foreground so a placeholder the user is looking at
+  stays rendered and clickable.
+- The paced sweep skips a tab that is still inside that grace window, so a sweep cannot preempt it;
+  the sweep on tab activation remains the fallback if the worker is torn down before the timer fires.
+
 ## 2.7.0 — 2026-09-13 (branch: `master`)
 
 - The Memory Dashboard can act, not just report: pick an age (1, 3 or 24 hours) and **Suspend idle
