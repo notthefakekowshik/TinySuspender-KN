@@ -48,6 +48,7 @@ function makeChromeMock(initial = {}) {
     tabsUpdate: [],
     tabsCreate: [],
     tabsDiscard: [],
+    tabsReload: [],
     tabsSendMessage: [],
     setIcon: [],
   };
@@ -105,6 +106,10 @@ function makeChromeMock(initial = {}) {
         tabs.set(nextTabId, created);
         nextTabId++;
         if (cb) cb(created);
+      },
+      reload: (id, cb) => {
+        calls.tabsReload.push(id);
+        if (cb) cb();
       },
     },
     storage: {
@@ -169,6 +174,7 @@ function makeChromeMock(initial = {}) {
       onUpdated:        hubs.onUpdated.fire,
       onStorageChanged: hubs.onStorageChanged.fire,
       onAlarm:          hubs.onAlarm.fire,
+      onMessage:        hubs.onMessage.fire,
     },
     setTabs: (list) => {
       tabs.clear();

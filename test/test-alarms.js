@@ -432,13 +432,43 @@ test('suspending a background tab ends with its placeholder discarded', async (t
   await flush();
 
   assert.deepStrictEqual(mock.calls.tabsDiscard, [],
-    'discard must not beat the placeholder\'s own render');
+    'discard must wait until the placeholder reports it has rendered');
 
-  t.mock.timers.tick(1500);
+  // The placeholder says it has applied its title and icon.
+  mock.fire.onMessage({command: 'ts_suspend_page_ready'}, {tab: {id: 20}});
   await flush();
 
   assert.ok(mock.calls.tabsDiscard.includes(20),
     'the suspended tab should then be discarded so its renderer goes away');
+});
+
+test('a placeholder that never reports ready is discarded anyway', async (t) => {
+  // The renderer must not be held indefinitely just because the page failed to
+  // report in, so the schedule is a fallback as well as a handshake.
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock({sync: {idleTimeMinutes: 2}});
+  mock.setTabs([{id: 30, active: false, url: 'https://example.com/', title: 'Example'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  const suspendUrl = 'chrome-extension://test-extension-id/suspend.html?url=' + encodeURIComponent('https://example.com/');
+  mock.setTabs([{id: 30, active: false, url: suspendUrl, title: 'Example'}]);
+
+  mock.calls.tabsDiscard.length = 0;
+  mock.fire.onUpdated(30, {url: suspendUrl}, {id: 30, active: false, url: suspendUrl});
+  await flush();
+
+  assert.deepStrictEqual(mock.calls.tabsDiscard, [],
+    'nothing is discarded while the page is being given its chance to render');
+
+  t.mock.timers.tick(5000);
+  await flush();
+
+  assert.ok(mock.calls.tabsDiscard.includes(30),
+    'the fallback must reclaim the renderer when the page never reports');
 });
 
 test('a tab suspended while active is discarded once it goes to the background', async () => {
@@ -498,13 +528,13 @@ test('a tab that lands on the suspend page is discarded by the update event', as
   await flush();
 
   assert.deepStrictEqual(mock.calls.tabsDiscard, [],
-    'the placeholder gets a grace period to render itself first');
+    'the placeholder is not discarded before it reports it has rendered');
 
-  t.mock.timers.tick(1500);
+  mock.fire.onMessage({command: 'ts_suspend_page_ready'}, {tab: {id: 40}});
   await flush();
 
   assert.ok(mock.calls.tabsDiscard.includes(40),
-    'a background tab showing the suspend page should be discarded after the grace');
+    'a background tab showing the suspend page should be discarded once it reports ready');
 });
 
 test('a pending discard is cancelled when the placeholder is activated', async (t) => {
@@ -526,12 +556,16 @@ test('a pending discard is cancelled when the placeholder is activated', async (
   mock.fire.onUpdated(50, {url: suspendUrl}, {id: 50, active: false, url: suspendUrl});
   await flush();
 
-  // The user activates it before the grace elapses.
+  // The user activates it before it reports.
   mock.setTabs([{id: 50, active: true, url: suspendUrl, title: 'Example'}]);
   mock.fire.onActivated({tabId: 50, windowId: 1});
   await flush();
 
-  t.mock.timers.tick(1500);
+  // Neither the page reporting ready nor the fallback expiring may discard the
+  // tab the user is looking at.
+  mock.fire.onMessage({command: 'ts_suspend_page_ready'}, {tab: {id: 50}});
+  await flush();
+  t.mock.timers.tick(5000);
   await flush();
 
   assert.strictEqual(mock.calls.tabsDiscard.includes(50), false,
