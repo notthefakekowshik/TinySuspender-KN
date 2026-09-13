@@ -7,6 +7,17 @@ before being merged.
 
 When you bump the version, add a section here in the same commit.
 
+## 2.6.0 — 2026-09-13 (branch: memory-dashboard)
+
+- Added a Memory Dashboard (`dashboard.html`), linked from Settings next to Diagnostics, that shows
+  at a glance how many tabs are suspended: by Tiny Suspender, by another install (orphaned), and by
+  native tab discard, alongside the live count and the top 10 domains by suspended-tab count.
+- The dashboard reports "estimated memory reclaimed" — but that figure is explicitly an estimate,
+  never a measurement. Per-tab memory is not measurable from an extension because `chrome.processes`,
+  the only per-process memory API, is Dev-channel only.
+- The estimate is the suspended-tab count times a flat 150 MB-per-tab constant, a rough stand-in for
+  the renderer a suspension reclaims.
+
 ## 2.5.1 — 2026-09-13 (branch: `alarm-scheduler`)
 
 - Auto-suspension now runs from a single one-minute alarm that scans for idle tabs, instead of one
