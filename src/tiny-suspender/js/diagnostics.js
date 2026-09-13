@@ -56,22 +56,22 @@ let loadEnvironment = () => {
 
 let loadState = () => {
   chrome.alarms.getAll((alarms) => {
-    let names = alarms.map((alarm) => alarm.name).sort();
-
     chrome.tabs.query({}, (tabs) => {
       let suspended = tabs.filter((tab) => isSuspendPageUrl(tab.url));
       let own = tabs.filter((tab) => (tab.url || '').startsWith(suspendPagePrefix));
       let orphaned = suspended.filter((tab) => !(tab.url || '').startsWith(suspendPagePrefix));
-      let discarded = tabs.filter((tab) => tab.discarded);
+      // Our own suspended tabs are discarded too (swap, then discard), so a plain
+      // tab.discarded count double-counts them and drives "live" negative.
+      let nativeDiscarded = tabs.filter((tab) => tab.discarded && !isSuspendPageUrl(tab.url));
+      let scheduled = alarms.some((alarm) => alarm.name === 'ts-autosuspend');
 
       setRows('state', [
-        ['Active alarms', alarms.length + ' (Chrome caps an extension at 500)'],
-        ['Alarm names', names.length ? names.join(', ') : '(none)'],
+        ['Auto-suspend alarm', scheduled ? 'scheduled (every 1 min)' : 'not scheduled'],
         ['Tabs', String(tabs.length)],
         ['Suspended by Tiny Suspender', String(own.length)],
         ['Suspended by another install (orphaned)', String(orphaned.length)],
-        ['Suspended by native tab discard', String(discarded.length)],
-        ['Live (not suspended)', String(tabs.length - suspended.length - discarded.length)]
+        ['Suspended by native tab discard', String(nativeDiscarded.length)],
+        ['Live (not suspended)', String(tabs.length - suspended.length - nativeDiscarded.length)]
       ]);
     });
   });
