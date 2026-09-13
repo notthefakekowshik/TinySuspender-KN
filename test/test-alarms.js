@@ -396,11 +396,14 @@ test('media position is not requested for non-YouTube tabs', async () => {
   assert.ok(!update.info.url.includes('media_t'), 'suspend URL should not carry a media timestamp');
 });
 
-test('suspending a background tab ends with its placeholder discarded', async () => {
+test('suspending a background tab ends with its placeholder discarded', async (t) => {
   // Measured in lab/memory-lab.js: the URL swap alone reclaims nothing, because
   // the old document stays alive in the back/forward cache. Discarding the
   // placeholder is what returns the memory — but it has to wait for the URL to
   // commit, otherwise the navigation is cancelled and the tab keeps its page.
+  // It is then held briefly so the placeholder can render its own title and icon.
+  t.mock.timers.enable({apis: ['setTimeout']});
+
   const mock = makeChromeMock({
     sync: { idleTimeMinutes: 2 },
     onTabMessage: (id, msg) => {
@@ -424,8 +427,14 @@ test('suspending a background tab ends with its placeholder discarded', async ()
   assert.deepStrictEqual(mock.calls.tabsDiscard, [],
     'discard must wait until the placeholder URL has committed');
 
-  // tabs.onUpdated announces the committed URL, which is what triggers discard.
+  // tabs.onUpdated announces the committed URL, which schedules the discard.
   mock.fire.onUpdated(20, {url: tab.url}, {...tab});
+  await flush();
+
+  assert.deepStrictEqual(mock.calls.tabsDiscard, [],
+    'discard must not beat the placeholder\'s own render');
+
+  t.mock.timers.tick(1500);
   await flush();
 
   assert.ok(mock.calls.tabsDiscard.includes(20),
@@ -467,8 +476,10 @@ test('a tab suspended while active is discarded once it goes to the background',
     'the backgrounded suspended tab should be discarded on activation');
 });
 
-test('a tab that lands on the suspend page is discarded by the update event', async () => {
+test('a tab that lands on the suspend page is discarded by the update event', async (t) => {
   // Safety net for paths the worker only observes through tabs.onUpdated.
+  t.mock.timers.enable({apis: ['setTimeout']});
+
   const mock = makeChromeMock({sync: {idleTimeMinutes: 2}});
   mock.setTabs([{id: 40, active: false, url: 'https://example.com/', title: 'Example'}]);
 
@@ -486,8 +497,45 @@ test('a tab that lands on the suspend page is discarded by the update event', as
   mock.fire.onUpdated(40, {url: suspendUrl}, {id: 40, active: false, url: suspendUrl});
   await flush();
 
+  assert.deepStrictEqual(mock.calls.tabsDiscard, [],
+    'the placeholder gets a grace period to render itself first');
+
+  t.mock.timers.tick(1500);
+  await flush();
+
   assert.ok(mock.calls.tabsDiscard.includes(40),
-    'a background tab showing the suspend page should be discarded');
+    'a background tab showing the suspend page should be discarded after the grace');
+});
+
+test('a pending discard is cancelled when the placeholder is activated', async (t) => {
+  // The user clicked the placeholder: it must stay rendered while they look at
+  // it, so the site icon is visible and the page is still clickable to restore.
+  t.mock.timers.enable({apis: ['setTimeout']});
+
+  const mock = makeChromeMock({sync: {idleTimeMinutes: 2}});
+  mock.setTabs([{id: 50, active: false, url: 'https://example.com/', title: 'Example'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  const suspendUrl = 'chrome-extension://test-extension-id/suspend.html?url=' + encodeURIComponent('https://example.com/');
+  mock.setTabs([{id: 50, active: false, url: suspendUrl, title: 'Example'}]);
+
+  mock.calls.tabsDiscard.length = 0;
+  mock.fire.onUpdated(50, {url: suspendUrl}, {id: 50, active: false, url: suspendUrl});
+  await flush();
+
+  // The user activates it before the grace elapses.
+  mock.setTabs([{id: 50, active: true, url: suspendUrl, title: 'Example'}]);
+  mock.fire.onActivated({tabId: 50, windowId: 1});
+  await flush();
+
+  t.mock.timers.tick(1500);
+  await flush();
+
+  assert.strictEqual(mock.calls.tabsDiscard.includes(50), false,
+    'the placeholder the user is looking at must not be discarded');
 });
 
 test('unrelated background tabs are never discarded', async () => {
