@@ -309,6 +309,53 @@ class TinySuspenderDashboard {
     }, 500);
   }
 
+  repairSummary(stats) {
+    if (!stats) return '';
+    if (!stats.total) return 'Every suspended tab already shows its site icon.';
+    return 'Repaired ' + stats.processed + ' of ' + stats.total + ' placeholder(s).';
+  }
+
+  onRepair() {
+    let button = document.querySelector('#repair_icons');
+    let message = document.querySelector('#repair_message');
+
+    button.disabled = true;
+    message.textContent = 'Repairing placeholder icons…';
+
+    this.chrome.runtime.sendMessage({command: 'ts_repair_suspended_tab_icons'}, (response) => {
+      if (this.chrome.runtime.lastError) {
+        button.disabled = false;
+        message.textContent = 'Could not start: ' + this.chrome.runtime.lastError.message;
+        return;
+      }
+
+      this.pollRepair();
+    });
+  }
+
+  // Each repair reloads a placeholder, so core paces it. Poll for progress the
+  // same way the reclaim does.
+  pollRepair() {
+    let button = document.querySelector('#repair_icons');
+    let message = document.querySelector('#repair_message');
+
+    let poll = setInterval(() => {
+      this.chrome.runtime.sendMessage({command: 'ts_repair_status'}, (response) => {
+        let stats = response && response.stats;
+
+        if (response && response.running) {
+          message.textContent = 'Repairing… ' + (stats ? stats.processed + ' of ' + stats.total : '');
+          return;
+        }
+
+        clearInterval(poll);
+        button.disabled = false;
+        message.textContent = this.repairSummary(stats) || 'Nothing to repair.';
+        this.refresh();
+      });
+    }, 500);
+  }
+
   render(tabs) {
     let buckets = this.classifyTabs(tabs);
     let suspended = buckets.own + buckets.orphaned;
@@ -334,6 +381,7 @@ class TinySuspenderDashboard {
     });
 
     document.querySelector('#reclaim_now').onclick = this.onReclaim.bind(this);
+    document.querySelector('#repair_icons').onclick = this.onRepair.bind(this);
 
     this.refresh();
   }

@@ -35,6 +35,18 @@
       </small>
     </div>
 
+    <h2>Repair placeholder icons</h2>
+    <div class="fieldset">
+      <button type="button" id="repair_icons">Repair placeholder icons</button>
+      <small class="dashboard-note" id="repair_message">
+        Tabs suspended before the icon fix keep the default &ldquo;Suspended&rdquo; title and the
+        extension&rsquo;s own icon, because Chrome stores a tab&rsquo;s icon at the moment the tab is
+        discarded. This reloads each of those placeholders once so it can render its site icon, then
+        reclaims it again. It touches every such tab, so it runs in paced batches, skips tabs that are
+        already fine, and runs on this machine only.
+      </small>
+    </div>
+
     <h2>Top domains by suspended tabs</h2>
     <small class="dashboard-note">Hostname taken from each suspended tab's original page, most-suspended first. Listed as domain, then suspended-tab count.</small>
     <table class="dashboard" id="domains"></table>
