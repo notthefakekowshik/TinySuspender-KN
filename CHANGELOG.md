@@ -7,7 +7,7 @@ before being merged.
 
 When you bump the version, add a section here in the same commit.
 
-## Unreleased
+## 2.5.0 — 2026-09-13 (branches: `install-migration`, `adopt-throttle`, `scale-fixes`)
 
 ### Cross-install migration (branch: `install-migration`)
 
