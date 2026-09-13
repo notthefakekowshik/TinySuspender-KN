@@ -57,10 +57,19 @@ Discarding is what returns the memory.
 | Auto-suspension with an open WebSocket | blocked; allowed again once the socket closes |
 | Alarm growth | one alarm per background tab, linear toward the 500 cap |
 
-Two platform facts worth remembering:
+Platform facts worth remembering:
 
 - Discarding is what reclaims memory; the URL swap is only bookkeeping. The
   extension discards the placeholder as soon as its URL commits.
+- The retained document is genuinely alive, and the back/forward cache explains
+  it: walking the tab's history back through `Page.navigateToHistoryEntry`
+  returns the **same document instance** (same in-page marker, same JS state),
+  and the memory stays flat for a full minute until something discards it.
+  `Cache-Control: no-store` does not change that in this build.
+- `chrome.tabs.goBack` **cannot** make that navigation — from the placeholder it
+  fails with "Cannot find a next page in history" even though
+  `Page.getNavigationHistory` shows the entry (index 1 of 2) and the protocol can
+  walk it. Use the protocol to test history, not the tabs API.
 - `chrome.tabs.discard` replaces the tab's WebContents, so `chrome.tabs` reports
   a **new tab id** afterwards, with **no events fired** for the change. Anything
   holding a tab id across a discard (including this lab) must re-resolve it.

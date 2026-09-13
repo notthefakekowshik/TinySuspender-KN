@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tiny Suspender Lab: marked</title>
+</head>
+<body>
+  <h1>Marked page</h1>
+  <p id="status">loading…</p>
+  <script>
+    // A per-load identity. If this value survives a round trip away from the
+    // page, the document was kept alive (back/forward cache) rather than reloaded.
+    window.__labInstance = Math.random().toString(36).slice(2) + '-' + Date.now();
+    window.__labLoadedAt = Date.now();
+
+    const mb = parseInt(new URLSearchParams(location.search).get('mb') || '0', 10);
+    if (mb > 0) {
+      const chunks = [];
+      for (let i = 0; i < mb; i++) {
+        const chunk = new Uint8Array(1024 * 1024);
+        for (let offset = 0; offset < chunk.length; offset += 4096) chunk[offset] = i & 0xff;
+        chunks.push(chunk);
+      }
+      window.__chunks = chunks;
+    }
+
+    // The title carries the identity so the lab can read it through
+    // chrome.tabs.get() instead of attaching a debugger to the page.
+    document.title = 'lab-instance ' + window.__labInstance;
+
+    document.querySelector('#status').textContent = 'instance ' + window.__labInstance
+      + (mb ? ', ' + mb + ' MB allocated' : '');
+  </script>
+</body>
+</html>

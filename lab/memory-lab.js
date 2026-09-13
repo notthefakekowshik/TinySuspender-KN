@@ -121,7 +121,9 @@ function startServer() {
   const sockets = new Set();
 
   const server = http.createServer((request, response) => {
-    const name = (request.url.split('?')[0].replace(/^\//, '') || 'static').replace(/[^a-z]/gi, '');
+    const [pathPart, queryPart] = request.url.split('?');
+    const name = (pathPart.replace(/^\//, '') || 'static').replace(/[^a-z]/gi, '');
+    const query = new URLSearchParams(queryPart || '');
     const file = path.join(PAGES_DIR, `${name}.html`);
 
     if (!fs.existsSync(file)) {
@@ -130,7 +132,11 @@ function startServer() {
       return;
     }
 
-    response.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store'});
+    // no-store keeps a document out of the back/forward cache, so the probe
+    // pages ask for it explicitly with ?cache=no; everything else revalidates.
+    const cacheControl = query.get('cache') === 'no' ? 'no-store' : 'no-cache';
+
+    response.writeHead(200, {'content-type': 'text/html; charset=utf-8', 'cache-control': cacheControl});
     response.end(fs.readFileSync(file));
   });
 
@@ -602,6 +608,205 @@ async function compareTabs(cdp, swSession, userDataDir, control, config) {
   await closeAllExcept(cdp, swSession, control.tabId);
 }
 
+const PATCH_DISCARD = `(() => {
+  ts.discardSuspendedTab = () => {};
+  ts.discardInactiveSuspendedTabs = () => {};
+  return true;
+})()`;
+
+const RESTORE_DISCARD = `(() => {
+  delete ts.discardSuspendedTab;
+  delete ts.discardInactiveSuspendedTabs;
+  return true;
+})()`;
+
+// Per-renderer detail, so we can tell whether a process is the page's own
+// renderer, the extension's renderer, or something else entirely.
+function rendererDetails(userDataDir) {
+  const output = execFileSync('ps', ['-ww', '-Ao', 'pid=,rss=,command='], {encoding: 'utf8'});
+
+  return output.split('\n')
+    .filter((line) => line.includes(userDataDir) && line.includes('--type=renderer'))
+    .map((line) => {
+      const parts = line.trim().split(/\s+/);
+      return {
+        pid: parts[0],
+        rssMb: Math.round((parseInt(parts[1], 10) || 0) / 1024),
+        extension: line.includes('--extension-process'),
+        client: (line.match(/--renderer-client-id=(\d+)/) || [])[1] || '?',
+      };
+    })
+    .sort((a, b) => b.rssMb - a.rssMb);
+}
+
+function describeRenderers(userDataDir) {
+  return rendererDetails(userDataDir)
+    .map((entry) => `${entry.pid} ${entry.rssMb}MB ${entry.extension ? 'ext' : 'page'}#${entry.client}`)
+    .join(' | ');
+}
+
+// Where does the retained memory actually live, and what releases it?
+async function retentionAnatomyProbe(cdp, swSession, userDataDir, control, config) {
+  const {label, query} = config;
+
+  console.log('');
+  console.log(`Scenario 11 — what holds the memory after the swap? (${label})`);
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+
+  const tab = await openTab(cdp, swSession, `${BASE_A}/marked?tag=anatomy&${query}`);
+  await activate(cdp, swSession, control.tabId);
+  await sleep(1500);
+
+  record('retention', `${label}: renderers while live`, describeRenderers(userDataDir));
+
+  try {
+    await cdp.evaluate(swSession, PATCH_DISCARD);
+    await upstreamSwap(cdp, swSession, tab.tabId);
+    await sleep(3000);
+
+    record('retention', `${label}: renderers after the swap`, describeRenderers(userDataDir));
+
+    const historyLength = await cdp.evaluate(tab.sessionId, 'history.length');
+    record('retention', `${label}: history.length on the placeholder`, String(historyLength));
+
+    // A plain navigation away from the placeholder: does that release it?
+    await cdp.evaluate(swSession, `(async () => { await chrome.tabs.update(${tab.tabId}, {url: 'about:blank'}); return true; })()`);
+    await sleep(3000);
+    record('retention', `${label}: renderers after navigating to about:blank`, describeRenderers(userDataDir));
+  }
+  finally {
+    await cdp.evaluate(swSession, RESTORE_DISCARD);
+  }
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+}
+
+async function tabTitle(cdp, swSession, tabId) {
+  return cdp.evaluate(swSession, `(async () => (await chrome.tabs.get(${tabId})).title)()`);
+}
+
+// Suspend exactly the way upstream does: swap the URL and never discard.
+// The placeholder gets a fixed title so it cannot be confused with the page.
+async function upstreamSwap(cdp, swSession, tabId) {
+  await cdp.evaluate(swSession, `(async () => {
+    const tab = await chrome.tabs.get(${tabId});
+    await chrome.tabs.update(${tabId}, {
+      url: 'suspend.html?url=' + encodeURIComponent(tab.url) + '&title=' + encodeURIComponent('suspended by lab'),
+    });
+    return true;
+  })()`);
+}
+
+// Does the original document survive the URL swap? The page stamps its identity
+// into the tab title, so this needs no debugger attached to the page (which can
+// itself disable the cache). Navigating back either restores that same document
+// or reloads a fresh one — and if goBack finds no history entry, we see the
+// placeholder still in place.
+async function bfcacheProbe(cdp, swSession, userDataDir, control, config) {
+  const {label, query} = config;
+
+  console.log('');
+  console.log(`Scenario 9 — back/forward cache probe: ${label}`);
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+
+  const tab = await openTab(cdp, swSession, `${BASE_A}/marked?tag=bfcache&${query}`);
+  await activate(cdp, swSession, control.tabId);
+  await sleep(1500);
+
+  const before = await tabTitle(cdp, swSession, tab.tabId);
+
+  try {
+    await cdp.evaluate(swSession, PATCH_DISCARD);
+    await upstreamSwap(cdp, swSession, tab.tabId);
+    await sleep(2500);
+
+    const swapped = await tabTitle(cdp, swSession, tab.tabId);
+    const swappedUrl = await tabUrl(cdp, swSession, tab.tabId);
+
+    await activate(cdp, swSession, tab.tabId);
+    await sleep(700);
+
+    // chrome.tabs.goBack refuses to navigate from the extension placeholder back
+    // to the page ("Cannot find a next page in history") even though the entry
+    // exists; the protocol can walk the same history, so use that instead.
+    const goBack = await cdp.evaluate(swSession, `(async () => {
+      try {
+        await chrome.tabs.goBack(${tab.tabId});
+        return 'ok';
+      }
+      catch (error) {
+        return 'failed: ' + error.message;
+      }
+    })()`);
+
+    const history = await cdp.send('Page.getNavigationHistory', {}, tab.sessionId);
+
+    if (history.currentIndex > 0) {
+      const previous = history.entries[history.currentIndex - 1];
+      await cdp.send('Page.navigateToHistoryEntry', {entryId: previous.id}, tab.sessionId);
+      await sleep(3000);
+    }
+
+    const after = await tabTitle(cdp, swSession, tab.tabId);
+    const afterUrl = await tabUrl(cdp, swSession, tab.tabId);
+
+    record('bfcache', `${label}: title while live`, String(before));
+    record('bfcache', `${label}: title after the swap`, String(swapped).slice(0, 50));
+    record('bfcache', `${label}: chrome.tabs.goBack`, String(goBack));
+    record('bfcache', `${label}: history entries after the swap`, String(history.entries.length));
+    record('bfcache', `${label}: title after going back`, String(after).slice(0, 50));
+    record('bfcache', `${label}: url after going back`, String(afterUrl).slice(0, 55));
+    record('bfcache', `${label}: verdict`,
+      after === before ? 'SAME document — kept alive (back/forward cache)'
+        : after === swapped ? 'still on the placeholder — goBack did not navigate'
+          : 'freshly loaded document — not kept');
+  }
+  finally {
+    await cdp.evaluate(swSession, RESTORE_DISCARD);
+  }
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+}
+
+// Upstream's swap often looks like it reclaims nothing — but does the memory
+// come back on its own if we simply wait? Samples the processes over a minute.
+async function swapDurabilityProbe(cdp, swSession, userDataDir, control, config) {
+  const {label, query, seconds} = config;
+
+  console.log('');
+  console.log(`Scenario 10 — does the swap reclaim anything by itself? (${label})`);
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+
+  const tab = await openTab(cdp, swSession, `${BASE_A}/marked?tag=durability&${query}`);
+  await activate(cdp, swSession, control.tabId);
+  await sleep(1500);
+
+  const live = rendererStats(userDataDir);
+  record('swap-durability', `${label}: renderers / RSS while live`, `${live.renderers} / ${live.rssMb} MB`);
+
+  try {
+    await cdp.evaluate(swSession, PATCH_DISCARD);
+    await upstreamSwap(cdp, swSession, tab.tabId);
+
+    const samples = [];
+    for (let elapsed = 5; elapsed <= seconds; elapsed += 5) {
+      await sleep(5000);
+      const stats = rendererStats(userDataDir);
+      samples.push(`${elapsed}s ${stats.renderers}/${stats.rssMb}MB`);
+    }
+
+    record('swap-durability', `${label}: after the swap, over ${seconds}s`, samples.join(' | '));
+  }
+  finally {
+    await cdp.evaluate(swSession, RESTORE_DISCARD);
+  }
+
+  await closeAllExcept(cdp, swSession, control.tabId);
+}
+
 async function main() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiny-suspender-lab-'));
   const server = await startServer();
@@ -626,6 +831,33 @@ async function main() {
     // is allowed (Chrome refuses to discard the active tab).
     const control = await openTab(cdp, swSession, 'about:blank');
     const baseline = await stableStats(userDataDir, 'control tab only');
+
+    // --- 9. is the old document really kept alive? --------------------------
+    await bfcacheProbe(cdp, swSession, userDataDir, control, {
+      label: 'light document, cacheable',
+      query: 'mb=0',
+    });
+
+    await bfcacheProbe(cdp, swSession, userDataDir, control, {
+      label: 'light document, cache-control: no-store',
+      query: 'mb=0&cache=no',
+    });
+
+    await bfcacheProbe(cdp, swSession, userDataDir, control, {
+      label: '100 MB document, cacheable',
+      query: 'mb=100',
+    });
+
+    await retentionAnatomyProbe(cdp, swSession, userDataDir, control, {
+      label: '100 MB document',
+      query: 'mb=100',
+    });
+
+    await swapDurabilityProbe(cdp, swSession, userDataDir, control, {
+      label: '100 MB document, no-store',
+      query: 'mb=100&cache=no',
+      seconds: 30,
+    });
 
     // --- 0. what does discard do to the tab list? ---------------------------
     console.log('Scenario 0: how does the tab list behave around a discard?');
@@ -885,8 +1117,105 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error('');
-  console.error('lab failed: ' + error.message);
-  process.exit(1);
-});
+// Focused run: one tab, kept in the foreground, so chrome.tabs.goBack is allowed.
+async function bfcacheOnly() {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiny-suspender-lab-'));
+  const server = await startServer();
+  const browser = await launchBrowser(userDataDir);
+  activeBrowser = browser.proc;
+  activeProfile = userDataDir;
+
+  let cdp = null;
+  let swSession = null;
+
+  try {
+    const version = await (await fetch(`http://127.0.0.1:${browser.port}/json/version`)).json();
+    cdp = await Cdp.connect(version.webSocketDebuggerUrl);
+
+    const worker = await findServiceWorker(cdp);
+    swSession = await cdp.attach(worker.targetId);
+
+    const cacheQuery = argv.includes('--no-store') ? 'mb=100&cache=no' : 'mb=100';
+    console.log(`Document: marked?${cacheQuery}`);
+
+    const tab = await openTab(cdp, swSession, `${BASE_A}/marked?tag=bfcache-only&${cacheQuery}`);
+    await sleep(1500);
+
+    const before = await tabTitle(cdp, swSession, tab.tabId);
+    console.log(`title while live: ${before}`);
+    console.log(`history.length while live: ${await cdp.evaluate(tab.sessionId, 'history.length')}`);
+
+    await cdp.evaluate(swSession, PATCH_DISCARD);
+    await upstreamSwap(cdp, swSession, tab.tabId);
+    await sleep(2500);
+
+    console.log(`title after the swap: ${await tabTitle(cdp, swSession, tab.tabId)}`);
+    console.log(`history.length on the placeholder: ${await cdp.evaluate(tab.sessionId, 'history.length')}`);
+
+    const goBack = await cdp.evaluate(swSession, `(async () => {
+      try {
+        await chrome.tabs.goBack(${tab.tabId});
+        return 'ok';
+      }
+      catch (error) {
+        return 'failed: ' + error.message;
+      }
+    })()`);
+    console.log(`goBack with the tab active: ${goBack}`);
+
+    // chrome.tabs refuses, so ask the protocol for the real history and walk it.
+    const history = await cdp.send('Page.getNavigationHistory', {}, tab.sessionId);
+    console.log(`cdp history: currentIndex=${history.currentIndex}, entries=`
+      + history.entries.map((entry) => entry.url.slice(0, 40)).join(' -> '));
+
+    if (history.currentIndex > 0) {
+      const previous = history.entries[history.currentIndex - 1];
+      await cdp.send('Page.navigateToHistoryEntry', {entryId: previous.id}, tab.sessionId);
+      await sleep(3000);
+    }
+
+    const after = await tabTitle(cdp, swSession, tab.tabId);
+    console.log(`title after going back: ${after}`);
+    console.log(`url after going back: ${await tabUrl(cdp, swSession, tab.tabId)}`);
+    console.log('verdict: ' + (after === before
+      ? 'SAME document — kept alive (back/forward cache)'
+      : after === 'suspended by lab'
+        ? 'still on the placeholder — goBack did not navigate'
+        : 'freshly loaded document — not kept'));
+  }
+  finally {
+    if (cdp && swSession) {
+      try {
+        await cdp.evaluate(swSession, RESTORE_DISCARD);
+      }
+      catch (error) {
+        // session already gone
+      }
+    }
+    if (cdp) cdp.close();
+    browser.proc.kill('SIGTERM');
+    await sleep(500);
+    try {
+      fs.rmSync(userDataDir, {recursive: true, force: true, maxRetries: 5, retryDelay: 200});
+    }
+    catch (error) {
+      // best effort
+    }
+    server.close();
+  }
+}
+
+if (argv.includes('--bfcache-only')) {
+  bfcacheOnly().catch((error) => {
+    console.error('');
+    console.error('lab failed: ' + error.message);
+    process.exit(1);
+  });
+}
+else {
+  main().catch((error) => {
+    console.error('');
+    console.error('lab failed: ' + error.message);
+    process.exit(1);
+  });
+}
