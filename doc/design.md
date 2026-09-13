@@ -112,6 +112,21 @@ IPC Commands (CORE)
   for state, and then override the returned value if necessary
 
 
+Suspension and memory reclaim
+-----------------------------
+Swapping a tab's URL to the suspend page does not free anything by itself: the
+original document stays alive in the back/forward cache, so its renderer keeps
+running. The suspended tab is therefore discarded once the placeholder URL has
+committed (driven by tabs.onUpdated), which is what actually reclaims the
+renderer. Measured with lab/memory-lab.js on Brave 152: a 200 MB page reclaims
+~0 MB from the URL swap alone and ~340 MB once the placeholder is discarded;
+native discard without any swap reclaims the same ~345 MB.
+
+Note for future work: discarding replaces the tab's WebContents, so chrome.tabs
+reports a *new* tab id afterwards — and fires no events for the change. Never
+hold a tab id across a discard; look it up again with a fresh tabs.query.
+
+
 Page Agent (MAIN world)
 -----------------------
 `js/page-agent.js` runs in the page's own context at document_start, before any

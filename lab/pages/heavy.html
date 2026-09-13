@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tiny Suspender Lab: heavy</title>
+</head>
+<body>
+  <h1>Heavy page</h1>
+  <p id="status">allocating…</p>
+  <script>
+    const mb = parseInt(new URLSearchParams(location.search).get('mb') || '200', 10);
+
+    // Touch every page so the memory is actually committed, not just reserved.
+    const chunks = [];
+    for (let i = 0; i < mb; i++) {
+      const chunk = new Uint8Array(1024 * 1024);
+      for (let offset = 0; offset < chunk.length; offset += 4096) {
+        chunk[offset] = i & 0xff;
+      }
+      chunks.push(chunk);
+    }
+    window.__chunks = chunks;
+
+    document.querySelector('#status').textContent = 'allocated ' + mb + ' MB — ' + (location.search || '(no tag)');
+  </script>
+</body>
+</html>

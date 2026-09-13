@@ -283,6 +283,115 @@ test('media position is not requested for non-YouTube tabs', async () => {
   assert.ok(!update.info.url.includes('media_t'), 'suspend URL should not carry a media timestamp');
 });
 
+test('suspending a background tab ends with its placeholder discarded', async () => {
+  // Measured in lab/memory-lab.js: the URL swap alone reclaims nothing, because
+  // the old document stays alive in the back/forward cache. Discarding the
+  // placeholder is what returns the memory — but it has to wait for the URL to
+  // commit, otherwise the navigation is cancelled and the tab keeps its page.
+  const mock = makeChromeMock({
+    sync: { idleTimeMinutes: 2 },
+    onTabMessage: (id, msg) => {
+      if (msg.command === 'ts_get_tab_state') return {state: 'suspendable:auto'};
+      if (msg.command === 'ts_get_tab_scroll') return {scroll: {x: 0, y: 0}};
+      return undefined;
+    },
+  });
+  mock.setTabs([{id: 20, active: false, url: 'https://example.com/', title: 'Example'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsDiscard.length = 0;
+  core.suspendTab(20);
+  await flush();
+
+  const tab = mock.getTabs().find((candidate) => candidate.id === 20);
+  assert.ok(tab.url.includes('suspend.html'), 'tab should be sent to the suspend page');
+  assert.deepStrictEqual(mock.calls.tabsDiscard, [],
+    'discard must wait until the placeholder URL has committed');
+
+  // tabs.onUpdated announces the committed URL, which is what triggers discard.
+  mock.fire.onUpdated(20, {url: tab.url}, {...tab});
+  await flush();
+
+  assert.ok(mock.calls.tabsDiscard.includes(20),
+    'the suspended tab should then be discarded so its renderer goes away');
+});
+
+test('a tab suspended while active is discarded once it goes to the background', async () => {
+  const mock = makeChromeMock({
+    sync: { idleTimeMinutes: 2 },
+    onTabMessage: (id, msg) => {
+      if (msg.command === 'ts_get_tab_state') return {state: 'suspendable:auto'};
+      if (msg.command === 'ts_get_tab_scroll') return {scroll: {x: 0, y: 0}};
+      return undefined;
+    },
+  });
+  mock.setTabs([{id: 21, active: true, url: 'https://example.com/', title: 'Example'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsDiscard.length = 0;
+  core.suspendTab(21);
+  await flush();
+
+  assert.strictEqual(mock.calls.tabsDiscard.includes(21), false,
+    'Chrome refuses to discard the active tab');
+
+  // The user switches away: the suspended tab is now in the background.
+  mock.setTabs([
+    {id: 21, active: false, url: 'chrome-extension://test-extension-id/suspend.html?url=https%3A%2F%2Fexample.com%2F', title: 'Example'},
+    {id: 22, active: true, url: 'https://other.com/', title: 'Other'},
+  ]);
+
+  mock.fire.onActivated({tabId: 22, windowId: 1});
+  await flush();
+
+  assert.ok(mock.calls.tabsDiscard.includes(21),
+    'the backgrounded suspended tab should be discarded on activation');
+});
+
+test('a tab that lands on the suspend page is discarded by the update event', async () => {
+  // Safety net for paths the worker only observes through tabs.onUpdated.
+  const mock = makeChromeMock({sync: {idleTimeMinutes: 2}});
+  mock.setTabs([{id: 40, active: false, url: 'https://example.com/', title: 'Example'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  const suspendUrl = 'chrome-extension://test-extension-id/suspend.html?url=' + encodeURIComponent('https://example.com/');
+  mock.setTabs([
+    {id: 40, active: false, url: suspendUrl, title: 'Example'},
+    {id: 41, active: true, url: 'https://other.com/', title: 'Other'},
+  ]);
+
+  mock.calls.tabsDiscard.length = 0;
+  mock.fire.onUpdated(40, {url: suspendUrl}, {id: 40, active: false, url: suspendUrl});
+  await flush();
+
+  assert.ok(mock.calls.tabsDiscard.includes(40),
+    'a background tab showing the suspend page should be discarded');
+});
+
+test('unrelated background tabs are never discarded', async () => {
+  const mock = makeChromeMock({sync: {idleTimeMinutes: 2}});
+  mock.setTabs([
+    {id: 30, active: false, url: 'https://example.com/', title: 'Example'},
+    {id: 31, active: true, url: 'https://other.com/', title: 'Other'},
+  ]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  assert.deepStrictEqual(mock.calls.tabsDiscard, [],
+    'only tabs showing the suspend page may be discarded');
+});
+
 test('icon contract: every documented state maps to its intended icon', async () => {
   // If you add a new state to getTabState, add it here too. Without this
   // contract, a forgotten state silently falls through to the 'red' default

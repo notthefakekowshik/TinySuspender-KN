@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tiny Suspender Lab: socket</title>
+</head>
+<body>
+  <h1>Live socket page</h1>
+  <p id="status">connecting…</p>
+  <script>
+    const socket = new WebSocket('ws://' + location.host + '/ws');
+
+    socket.addEventListener('open', () => {
+      document.querySelector('#status').textContent = 'socket open — ' + (location.search || '(no tag)');
+    });
+    socket.addEventListener('close', () => {
+      document.querySelector('#status').textContent = 'socket closed — ' + (location.search || '(no tag)');
+    });
+
+    window.closeSocket = () => socket.close();
+  </script>
+</body>
+</html>

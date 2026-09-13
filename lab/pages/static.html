@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tiny Suspender Lab: static</title>
+</head>
+<body>
+  <h1>Static page</h1>
+  <p id="tag"></p>
+  <script>
+    document.querySelector('#tag').textContent = 'tag: ' + (location.search || '(none)');
+  </script>
+</body>
+</html>

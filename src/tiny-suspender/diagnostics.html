@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Tiny Suspender: Diagnostics</title>
+  <link rel="stylesheet" type="text/css" href="css/settings.css">
+  <link rel="stylesheet" type="text/css" href="css/settings-dark.css">
+  <style>
+    table.diagnostics { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+    table.diagnostics td { padding: 4px 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.3); vertical-align: top; }
+    table.diagnostics td:first-child { white-space: nowrap; opacity: 0.75; }
+    table.diagnostics th { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.5); }
+    .diagnostics-note { display: block; opacity: 0.7; margin: 6px 0 12px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">Tiny Suspender <span id="version_string"></span> &mdash; Diagnostics</div>
+
+    <h2>Environment</h2>
+    <table class="diagnostics" id="environment"></table>
+
+    <h2>Extension state</h2>
+    <table class="diagnostics" id="state"></table>
+
+    <h2>Processes</h2>
+    <small class="diagnostics-note">
+      Per-process memory comes from <code>chrome.processes</code>, which Chrome only exposes on the
+      Dev channel. On stable Chrome or Brave it stays unavailable &mdash; use <code>lab/memory-lab.js</code>
+      to measure memory there instead.
+    </small>
+    <button type="button" id="request_processes">Request processes permission</button>
+    <button type="button" id="refresh_processes">Refresh</button>
+    <table class="diagnostics" id="processes"></table>
+    <small class="diagnostics-note" id="process_message"></small>
+  </div>
+  <script type="text/javascript" src="js/diagnostics.js"></script>
+</body>
+</html>

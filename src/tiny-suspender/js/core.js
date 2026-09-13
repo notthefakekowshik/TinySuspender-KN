@@ -133,6 +133,7 @@ class TinySuspenderCore {
     });
     this.chrome.alarms.onAlarm.addListener(this.onAlarm.bind(this));
     this.initTimersForBackgroundTabs();
+    this.discardInactiveSuspendedTabs();
   }
 
   readSettings() {
@@ -554,6 +555,9 @@ class TinySuspenderCore {
           }
           else {
             this.getTabMedia(tab).then((media) => {
+              // The discard happens in onTabUpdated once the suspend URL has
+              // actually committed; discarding from this callback would cancel
+              // the navigation before the placeholder is in place.
               this.chrome.tabs.update(tab.id, {url: this.buildSuspendUrl(tab, scroll, media)});
             });
           }
@@ -587,6 +591,33 @@ class TinySuspenderCore {
 
         this.chrome.tabs.update(tab.id, {url: pageUrl});
       }
+    });
+  }
+
+  isSuspendedUrl(url) {
+    return !!url && url.startsWith(this.chrome.runtime.getURL('suspend.html'));
+  }
+
+  // Swapping the tab URL to the suspend page is not enough on its own: the old
+  // document stays alive in the back/forward cache, keeping its renderer (and
+  // its memory) running. Discarding the suspended tab is what reclaims it —
+  // lab/memory-lab.js measures ~0 MB from the swap alone and ~347 MB for a
+  // 200 MB page once the tab is discarded.
+  discardSuspendedTab(tabId) {
+    this.chrome.tabs.get(tabId, (tab) => {
+      if (!tab || tab.active || tab.discarded || !this.isSuspendedUrl(tab.url)) return;
+      this.chrome.tabs.discard(tabId, () => { void this.chrome.runtime.lastError; });
+    });
+  }
+
+  // Chrome refuses to discard the active tab, so a tab suspended while the user
+  // was looking at it gets discarded here once it goes to the background.
+  discardInactiveSuspendedTabs() {
+    this.chrome.tabs.query({active: false}, (tabs) => {
+      tabs.forEach((tab) => {
+        if (tab.discarded || !this.isSuspendedUrl(tab.url)) return;
+        this.chrome.tabs.discard(tab.id, () => { void this.chrome.runtime.lastError; });
+      });
     });
   }
 
@@ -751,6 +782,13 @@ class TinySuspenderCore {
       this.applySavedScroll(tabId);
     }
 
+    // Safety net for every path that lands a tab on the suspend page (manual,
+    // automatic, context menu, autorestore): the swap alone frees nothing, the
+    // discard is what returns the memory.
+    if (changeInfo.url !== undefined || changeInfo.status === 'complete') {
+      this.discardSuspendedTab(tabId);
+    }
+
     // Only refresh the icon for the active tab, and only on changes that can flip state.
     const stateRelevant = changeInfo.url !== undefined
       || changeInfo.audible !== undefined
@@ -811,6 +849,9 @@ class TinySuspenderCore {
     // ensure alarms for all background tabs. ensureTabAutosuspensionTimer is
     // cheap on tabs that already have an alarm (one chrome.alarms.get call).
     this.initTimersForBackgroundTabs();
+    // A tab suspended while the user was looking at it could not be discarded
+    // yet; now that it is in the background, reclaim its renderer.
+    this.discardInactiveSuspendedTabs();
   }
 
   suspend_tab(request, sender, sendResponse) {

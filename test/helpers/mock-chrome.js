@@ -44,6 +44,7 @@ function makeChromeMock(initial = {}) {
     alarmsCreate: [],
     alarmsClear: [],
     tabsUpdate: [],
+    tabsDiscard: [],
     tabsSendMessage: [],
     setIcon: [],
   };
@@ -51,6 +52,7 @@ function makeChromeMock(initial = {}) {
   const chrome = {
     runtime: {
       id: 'test-extension-id',
+      getURL: (path) => 'chrome-extension://test-extension-id/' + path,
       lastError: null,
       onMessage:   { addListener: hubs.onMessage.addListener },
       onSuspend:   { addListener: hubs.onSuspend.addListener },
@@ -71,7 +73,12 @@ function makeChromeMock(initial = {}) {
       update: (id, info, cb) => {
         calls.tabsUpdate.push({id, info});
         const t = tabs.get(id);
-        if (t && info.url) t.url = info.url;
+        if (t && info.url) {
+          // Chrome resolves relative URLs against the extension's base URL.
+          t.url = info.url.startsWith('chrome-extension://')
+            ? info.url
+            : 'chrome-extension://test-extension-id/' + info.url;
+        }
         if (cb) cb(t);
       },
       sendMessage: (id, msg, ...rest) => {
@@ -82,7 +89,12 @@ function makeChromeMock(initial = {}) {
         const response = initial.onTabMessage ? initial.onTabMessage(id, msg) : undefined;
         if (cb) setImmediate(() => cb(response));
       },
-      discard: () => {},
+      discard: (id, cb) => {
+        calls.tabsDiscard.push(id);
+        const t = tabs.get(id);
+        if (t) t.discarded = true;
+        if (cb) cb();
+      },
       create: (info, cb) => { if (cb) cb({}); },
     },
     storage: {
@@ -147,6 +159,7 @@ function makeChromeMock(initial = {}) {
       tabs.clear();
       list.forEach((t) => tabs.set(t.id, t));
     },
+    getTabs: () => [...tabs.values()],
     syncStorage,
     localStorage,
     sessionStorage,
