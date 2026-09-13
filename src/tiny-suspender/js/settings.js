@@ -133,9 +133,7 @@ document.querySelector('#version_string').textContent = 'v' + chrome.runtime.get
 initSettings();
 
 
-const SETTINGS_KEYS = [
-  'idleTimeMinutes',
-  'whitelist',
+const BOOLEAN_SETTINGS = [
   'autorestore',
   'skip_audible',
   'skip_pinned',
@@ -144,6 +142,33 @@ const SETTINGS_KEYS = [
   'dark_mode',
   'auto_adopt'
 ];
+
+const SETTINGS_KEYS = ['idleTimeMinutes', 'whitelist', ...BOOLEAN_SETTINGS];
+
+// An imported file is just JSON somebody picked, so only known keys carrying the
+// type the rest of the extension expects are written. A whitelist that is not a
+// string (say, a number) makes readSettings throw on .split(), which leaves
+// settingsReady pending and stops auto-suspension silently.
+let sanitizeSettings = (items) => {
+  let clean = {};
+
+  if (!items || typeof items !== 'object' || Array.isArray(items)) return clean;
+
+  let idleTimeMinutes = parseInt(items.idleTimeMinutes);
+  if (!isNaN(idleTimeMinutes) && idleTimeMinutes >= 0) {
+    clean.idleTimeMinutes = idleTimeMinutes;
+  }
+
+  if (typeof items.whitelist === 'string') {
+    clean.whitelist = items.whitelist;
+  }
+
+  BOOLEAN_SETTINGS.forEach((key) => {
+    if (typeof items[key] === 'boolean') clean[key] = items[key];
+  });
+
+  return clean;
+};
 
 let downloadJson = (filename, data) => {
   let blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
@@ -260,17 +285,32 @@ let onImportSettings = () => {
   }
 
   readFileText(file, (content) => {
+    let message = document.querySelector('#settings_backup_message');
     let items;
     try {
       items = JSON.parse(content);
     }
     catch (error) {
-      document.querySelector('#settings_backup_message').textContent = 'That file is not valid JSON.';
+      message.textContent = 'That file is not valid JSON.';
       return;
     }
 
-    chrome.storage.sync.set(items, () => {
-      document.querySelector('#settings_backup_message').textContent = 'Settings imported.';
+    let clean = sanitizeSettings(items);
+    let keys = Object.keys(clean);
+    if (!keys.length) {
+      message.textContent = 'That file holds no settings this extension understands.';
+      return;
+    }
+
+    chrome.storage.sync.set(clean, () => {
+      // Sync storage has quotas (8 KB per item, 100 KB total), so a write can
+      // fail without the page noticing unless it is asked.
+      if (chrome.runtime.lastError) {
+        message.textContent = 'Settings could not be saved: ' + chrome.runtime.lastError.message;
+        return;
+      }
+
+      message.textContent = 'Imported ' + keys.length + ' setting(s).';
       initSettings();
     });
   });
@@ -281,3 +321,11 @@ document.querySelector('#adopt_tabs').onclick = onAdoptTabs;
 document.querySelector('#import_tabs').onclick = onImportTabs;
 document.querySelector('#export_settings').onclick = onExportSettings;
 document.querySelector('#import_settings').onclick = onImportSettings;
+
+
+try {
+  module.exports = {sanitizeSettings: sanitizeSettings};
+}
+catch (error) {
+
+}

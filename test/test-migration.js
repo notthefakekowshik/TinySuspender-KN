@@ -327,3 +327,126 @@ test('the adopt message reports a running sweep instead of starting another', as
   await flush();
   assert.strictEqual(mock.calls.tabsUpdate.length, 5);
 });
+
+const CRAFTED_TARGETS = [
+  'javascript:alert(1)',
+  'data:text/html,<script>alert(1)</script>',
+  'vbscript:msgbox(1)',
+];
+
+test('importSuspendedTabs refuses anything that is not a suspend page', async () => {
+  // A redirect url with its own url= param is not ours to turn into a tab.
+  const mock = makeChromeMock();
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsCreate.length = 0;
+
+  let imported = -1;
+  core.importSuspendedTabs([
+    'https://example.com/?url=' + encodeURIComponent('https://evil.example/steal'),
+    FOREIGN_ORIGIN + '/popup.html?url=' + encodeURIComponent('https://example.com/'),
+    'https://example.com/',
+  ], (n) => { imported = n; });
+  await flush();
+
+  assert.strictEqual(imported, 0, 'only suspend pages may be imported');
+  assert.strictEqual(mock.calls.tabsCreate.length, 0);
+});
+
+test('a suspend url cannot smuggle a script-bearing target in', async () => {
+  const mock = makeChromeMock();
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsCreate.length = 0;
+
+  let imported = -1;
+  core.importSuspendedTabs(CRAFTED_TARGETS.map((target) =>
+    OWN_ORIGIN + '/suspend.html?url=' + encodeURIComponent(target)), (n) => { imported = n; });
+  await flush();
+
+  assert.strictEqual(imported, 0, 'a crafted target must not be imported');
+  assert.strictEqual(mock.calls.tabsCreate.length, 0);
+});
+
+test('restoreTab refuses a target that is not a page and keeps the tab suspended', async () => {
+  const mock = makeChromeMock();
+  mock.setTabs(CRAFTED_TARGETS.map((target, index) => ({
+    id: index + 1,
+    active: false,
+    url: FOREIGN_ORIGIN + '/suspend.html?url=' + encodeURIComponent(target) + '&title=x',
+  })));
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+
+  CRAFTED_TARGETS.forEach((unused, index) => core.restoreTab(index + 1));
+  await flush();
+
+  assert.strictEqual(mock.calls.tabsUpdate.length, 0, 'nothing may be navigated to a crafted target');
+});
+
+test('restoreTab restores the legacy hash format', async () => {
+  const mock = makeChromeMock();
+  mock.setTabs([{id: 4, active: true, url: LEGACY_SUSPEND, title: 'Example'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  core.restoreTab(4);
+  await flush();
+
+  const update = mock.calls.tabsUpdate.find((c) => c.id === 4);
+  assert.ok(update, 'a #uri= suspend url is restorable now that the importer accepts them');
+  assert.strictEqual(update.info.url, 'https://example.com/');
+});
+
+test('adoption leaves a foreign suspend page with a crafted target alone', async () => {
+  const mock = makeChromeMock();
+  mock.setTabs(CRAFTED_TARGETS.map((target, index) => ({
+    id: index + 1,
+    active: false,
+    url: FOREIGN_ORIGIN + '/suspend.html?url=' + encodeURIComponent(target),
+  })));
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+
+  let adopted = -1;
+  core.adoptOrphanedSuspendedTabs((n) => { adopted = n; });
+  await flush();
+
+  assert.strictEqual(adopted, 0);
+  assert.strictEqual(mock.calls.tabsUpdate.length, 0);
+});
+
+test('a legacy hash target is validated before adoption', async () => {
+  const mock = makeChromeMock();
+  mock.setTabs([
+    {id: 1, active: false, url: FOREIGN_ORIGIN + '/suspend.html#uri=' + encodeURIComponent('javascript:alert(1)')},
+    {id: 2, active: false, url: LEGACY_SUSPEND},
+  ]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+
+  let adopted = -1;
+  core.adoptOrphanedSuspendedTabs((n) => { adopted = n; });
+  await flush();
+
+  assert.strictEqual(adopted, 1, 'the restorable legacy tab is adopted, the crafted one is not');
+  assert.strictEqual(mock.calls.tabsUpdate[0].id, 2);
+});

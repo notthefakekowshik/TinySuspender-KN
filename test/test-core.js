@@ -1,5 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { makeChromeMock } = require('./helpers/mock-chrome.js');
 
 const ts = require('../src/tiny-suspender/js/core.js');
 
@@ -73,6 +74,19 @@ test('addMediaStartTime appends a YouTube resume timestamp', () => {
   assert.strictEqual(
     ts.addMediaStartTime('https://example.com/watch?v=abc', '754'),
     'https://example.com/watch?v=abc');
+});
+
+test('readSettings tolerates settings stored with the wrong type', async () => {
+  // Regression: a non-string whitelist (say, a number from a hand-edited import)
+  // threw on .split(), which left settingsReady pending and stopped
+  // auto-suspension silently.
+  const mock = makeChromeMock({sync: {whitelist: 5, idleTimeMinutes: 'soon'}});
+  ts.setChrome(mock.chrome);
+
+  const settings = await ts.readSettings();
+
+  assert.deepStrictEqual(settings.whitelist, [], 'a non-string whitelist must not throw');
+  assert.strictEqual(settings.idleTimeMinutes, 30, 'an unparsable idle time falls back to 30');
 });
 
 test('package.json version stays in sync with the extension manifest', () => {

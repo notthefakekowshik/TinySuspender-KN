@@ -20,6 +20,12 @@ const AUTOSUSPEND_PERIOD_MINUTES = 1;
 // next tick pick up the rest.
 const AUTOSUSPEND_PER_TICK = 10;
 
+// The page schemes a suspend url may point at. A suspend url is just a url, so
+// it can be crafted — pasted into the importer, or left behind by another
+// extension — and it must never navigate a tab to javascript:, data: or any
+// other scheme that runs what it carries.
+const RESTORABLE_PROTOCOLS = ['http:', 'https:', 'file:'];
+
 
 class TinySuspenderCore {
 
@@ -199,7 +205,10 @@ class TinySuspenderCore {
         }
 
         this.whitelist = [];
-        if (items.whitelist) {
+        // Storage is shared with the options page and with hand-picked import
+        // files, so the type is not a given: a non-string used to throw here,
+        // which left settingsReady pending and stopped auto-suspension for good.
+        if (typeof items.whitelist === 'string') {
           let list = items.whitelist.split("\n");
 
           for (let i = 0; i < list.length; i++) {
@@ -646,21 +655,26 @@ class TinySuspenderCore {
 
   restoreTab(tabId) {
     this.chrome.tabs.get(tabId, (tab) => {
-      let url = new URL(tab.url);
-      if (this.isSuspendPageUrl(tab.url)) {
-        this.saveTabScroll(tabId, {
-          x: url.searchParams.get('scroll_x'),
-          y: url.searchParams.get('scroll_y')
-        });
+      if (!tab || !this.isSuspendPageUrl(tab.url)) return;
 
-        let pageUrl = url.searchParams.get('url');
-        let mediaTime = url.searchParams.get('media_t');
-        if (mediaTime) {
-          pageUrl = this.addMediaStartTime(pageUrl, mediaTime);
-        }
-
-        this.chrome.tabs.update(tab.id, {url: pageUrl});
+      let pageUrl = this.suspendPageTarget(tab.url);
+      if (!pageUrl) {
+        this.log('nothing restorable in this suspend url:', tab.url);
+        return;
       }
+
+      let url = new URL(tab.url);
+      this.saveTabScroll(tabId, {
+        x: url.searchParams.get('scroll_x'),
+        y: url.searchParams.get('scroll_y')
+      });
+
+      let mediaTime = url.searchParams.get('media_t');
+      if (mediaTime) {
+        pageUrl = this.addMediaStartTime(pageUrl, mediaTime);
+      }
+
+      this.chrome.tabs.update(tab.id, {url: pageUrl});
     });
   }
 
@@ -681,15 +695,45 @@ class TinySuspenderCore {
     }
   }
 
+  // The page a suspend url points at, or null when it carries nothing
+  // restorable. Handles both the current query format and the legacy hash
+  // format (#uri=...&title=...), which the importer still accepts.
+  suspendPageTarget(suspendUrl) {
+    let parsed;
+    try {
+      parsed = new URL(suspendUrl);
+    }
+    catch (error) {
+      return null;
+    }
+
+    let target = parsed.searchParams.get('url');
+
+    if (!target && parsed.hash) {
+      target = new URLSearchParams(parsed.hash.replace(/^#/, '')).get('uri');
+    }
+
+    if (!target || !this.isRestorableUrl(target)) return null;
+    return target;
+  }
+
+  isRestorableUrl(url) {
+    try {
+      return RESTORABLE_PROTOCOLS.includes(new URL(url).protocol);
+    }
+    catch (error) {
+      return false;
+    }
+  }
+
   // Re-points a tab suspended by a different install onto this extension's own
   // suspend page, keeping every param so the tab stays suspended while becoming
   // discardable and click-to-restore again under this install.
   adoptSuspendedTab(tab) {
     if (!this.isSuspendPageUrl(tab.url) || this.isSuspendedUrl(tab.url)) return false;
+    if (!this.suspendPageTarget(tab.url)) return false;
 
     let url = new URL(tab.url);
-    if (!url.searchParams.get('url') && !url.hash) return false;
-
     this.chrome.tabs.update(tab.id, {url: this.chrome.runtime.getURL('suspend.html') + url.search + url.hash});
     return true;
   }
@@ -773,16 +817,14 @@ class TinySuspenderCore {
       if (!entry) return;
 
       let raw = typeof entry === 'string' ? entry : entry.raw;
-      let url;
-      try {
-        url = new URL(raw);
-      }
-      catch (error) {
-        return;
-      }
 
-      if (!url.searchParams.get('url') && !url.hash) return;
+      // Only a suspend page carries a restorable target. Anything else the user
+      // pasted — a bookmark dump line, or a redirect url that happens to have
+      // its own url= param — is not ours to turn into a tab, and a crafted
+      // target (javascript:, data:) must never make it in.
+      if (!this.isSuspendPageUrl(raw) || !this.suspendPageTarget(raw)) return;
 
+      let url = new URL(raw);
       this.chrome.tabs.create({active: false, url: this.chrome.runtime.getURL('suspend.html') + url.search + url.hash});
       imported++;
     });

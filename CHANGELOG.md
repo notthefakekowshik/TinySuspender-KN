@@ -7,6 +7,18 @@ before being merged.
 
 When you bump the version, add a section here in the same commit.
 
+## 2.6.1 — 2026-09-13 (branch: `master`)
+
+- Importing suspended tabs now only accepts an actual suspend page carrying a restorable target.
+  A pasted bookmark line, or a redirect url that happens to have its own `url=` param, is no longer
+  turned into a junk suspended tab, and a crafted target (`javascript:`, `data:`) can no longer be
+  imported, adopted, or navigated to on restore. Legacy `#uri=` suspend urls are validated the same
+  way, and are restorable again now that `restoreTab` reads them.
+- Importing settings only applies known keys that carry the type the rest of the extension expects,
+  and a failed write is reported instead of being announced as success. `readSettings` also stops
+  assuming the whitelist is a string: a non-string used to throw there, which left `settingsReady`
+  pending and stopped auto-suspension until the value was fixed by hand.
+
 ## 2.6.0 — 2026-09-13 (branch: memory-dashboard)
 
 - Added a Memory Dashboard (`dashboard.html`), linked from Settings next to Diagnostics, that shows
