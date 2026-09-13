@@ -20,6 +20,7 @@ class TinySuspenderCore {
     this.enableTabDiscard = false;
 
     this.darkMode = false;
+    this.autoAdoptOnStartup = false;
 
     // Tracks the first settings load so alarm-creating paths don't
     // race with readSettings and use the constructor's default 30 min.
@@ -146,13 +147,15 @@ class TinySuspenderCore {
         'skip_pinned',
         'skip_when_offline',
         'enable_tab_discard',
-        'dark_mode'], (items) => {
+        'dark_mode',
+        'auto_adopt'], (items) => {
         this.autorestore = items.autorestore;
         this.skipAudible = items.skip_audible;
         this.skipPinned = items.skip_pinned;
         this.skipWhenOffline = items.skip_when_offline;
         this.enableTabDiscard = items.enable_tab_discard;
         this.darkMode = items.dark_mode;
+        this.autoAdoptOnStartup = !!items.auto_adopt;
 
         this.idleTimeMinutes = parseInt(items.idleTimeMinutes);
         if (isNaN(this.idleTimeMinutes)) {
@@ -290,7 +293,7 @@ class TinySuspenderCore {
 
           let url = new URL(tab.url);
 
-          if (url && url.protocol === 'chrome-extension:' && url.pathname === '/suspend.html') {
+          if (this.isSuspendPageUrl(tab.url)) {
             resolve({state: 'suspended:suspended'});
             return;
           }
@@ -577,7 +580,7 @@ class TinySuspenderCore {
   restoreTab(tabId) {
     this.chrome.tabs.get(tabId, (tab) => {
       let url = new URL(tab.url);
-      if (url && url.protocol === 'chrome-extension:' && url.pathname === '/suspend.html') {
+      if (this.isSuspendPageUrl(tab.url)) {
         this.saveTabScroll(tabId, {
           x: url.searchParams.get('scroll_x'),
           y: url.searchParams.get('scroll_y')
@@ -596,6 +599,94 @@ class TinySuspenderCore {
 
   isSuspendedUrl(url) {
     return !!url && url.startsWith(this.chrome.runtime.getURL('suspend.html'));
+  }
+
+  // Matches a suspend placeholder regardless of which extension id owns it, so
+  // tabs suspended by another install are still recognized and recoverable.
+  isSuspendPageUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    try {
+      let parsed = new URL(url);
+      return parsed.protocol === 'chrome-extension:' && parsed.pathname === '/suspend.html';
+    }
+    catch (error) {
+      return false;
+    }
+  }
+
+  // Re-points a tab suspended by a different install onto this extension's own
+  // suspend page, keeping every param so the tab stays suspended while becoming
+  // discardable and click-to-restore again under this install.
+  adoptSuspendedTab(tab) {
+    if (!this.isSuspendPageUrl(tab.url) || this.isSuspendedUrl(tab.url)) return false;
+
+    let url = new URL(tab.url);
+    if (!url.searchParams.get('url') && !url.hash) return false;
+
+    this.chrome.tabs.update(tab.id, {url: this.chrome.runtime.getURL('suspend.html') + url.search + url.hash});
+    return true;
+  }
+
+  adoptOrphanedSuspendedTabs(callback) {
+    this.chrome.tabs.query({}, (tabs) => {
+      let adopted = 0;
+      tabs.forEach((tab) => {
+        if (this.adoptSuspendedTab(tab)) adopted++;
+      });
+      if (callback) callback(adopted);
+    });
+  }
+
+  countOrphanedSuspendedTabs(callback) {
+    this.chrome.tabs.query({}, (tabs) => {
+      let count = tabs.filter((tab) => this.isSuspendPageUrl(tab.url) && !this.isSuspendedUrl(tab.url)).length;
+      callback(count);
+    });
+  }
+
+  collectSuspendedTabs(callback) {
+    this.chrome.tabs.query({}, (tabs) => {
+      let entries = tabs.filter((tab) => this.isSuspendPageUrl(tab.url)).map((tab) => {
+        let url = new URL(tab.url);
+        return {
+          url: url.searchParams.get('url'),
+          title: url.searchParams.get('title'),
+          favIconUrl: url.searchParams.get('favIconUrl'),
+          scroll_x: url.searchParams.get('scroll_x'),
+          scroll_y: url.searchParams.get('scroll_y'),
+          media_t: url.searchParams.get('media_t'),
+          raw: tab.url
+        };
+      });
+      callback(entries);
+    });
+  }
+
+  // Accepts raw suspend urls (from any install, including the legacy hash format)
+  // or entries produced by collectSuspendedTabs, and recreates each as a
+  // suspended tab owned by this install.
+  importSuspendedTabs(entries, callback) {
+    let imported = 0;
+
+    (entries || []).forEach((entry) => {
+      if (!entry) return;
+
+      let raw = typeof entry === 'string' ? entry : entry.raw;
+      let url;
+      try {
+        url = new URL(raw);
+      }
+      catch (error) {
+        return;
+      }
+
+      if (!url.searchParams.get('url') && !url.hash) return;
+
+      this.chrome.tabs.create({active: false, url: this.chrome.runtime.getURL('suspend.html') + url.search + url.hash});
+      imported++;
+    });
+
+    if (callback) callback(imported);
   }
 
   // Swapping the tab URL to the suspend page is not enough on its own: the old
@@ -684,6 +775,14 @@ class TinySuspenderCore {
           "contexts":[context],
           "id": "context-" + context
         });
+      }
+    });
+
+    // Off by default: adopting silently would hijack the tabs of a still-installed
+    // build, so this only runs when the user opts in.
+    this.settingsReady.then(() => {
+      if (this.autoAdoptOnStartup) {
+        this.adoptOrphanedSuspendedTabs();
       }
     });
   }
@@ -869,6 +968,26 @@ class TinySuspenderCore {
     if (request.tabId) {
       this.restoreTab(request.tabId);
     }
+  }
+
+  adopt_orphaned_suspended_tabs(request, sender, sendResponse) {
+    this.adoptOrphanedSuspendedTabs((adopted) => sendResponse({adopted: adopted}));
+    return true;
+  }
+
+  count_orphaned_suspended_tabs(request, sender, sendResponse) {
+    this.countOrphanedSuspendedTabs((count) => sendResponse({count: count}));
+    return true;
+  }
+
+  export_suspended_tabs(request, sender, sendResponse) {
+    this.collectSuspendedTabs((tabs) => sendResponse({tabs: tabs}));
+    return true;
+  }
+
+  import_suspended_tabs(request, sender, sendResponse) {
+    this.importSuspendedTabs(request.urls, (imported) => sendResponse({imported: imported}));
+    return true;
   }
 
   get_tab_state(request, sender, sendResponse) {
