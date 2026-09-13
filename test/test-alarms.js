@@ -18,68 +18,181 @@ async function flush(ticks = 8) {
   }
 }
 
-test('alarm for a new background tab uses the user\'s idleTimeMinutes, not the constructor default', async () => {
-  // Regression: previously, onTabCreated/onTabActivated used this.idleTimeMinutes
-  // synchronously, but readSettings is async — so after a service-worker wake
-  // alarms were created with the constructor default (30 min) instead of the
-  // user's setting.
-  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
-  mock.setTabs([{id: 1, active: true, url: 'https://example.com/', title: 'X'}]);
-
-  const core = freshCore();
-  core.setChrome(mock.chrome);
-  await flush();
-
-  mock.calls.alarmsCreate.length = 0;
-  mock.fire.onCreated({id: 2, active: false, url: 'https://other.com/', title: 'Y'});
-  await flush();
-
-  const created = mock.calls.alarmsCreate.find((c) => c.name === '2');
-  assert.ok(created, 'alarm should be created for new background tab');
-  assert.strictEqual(created.opts.delayInMinutes, 2,
-    'alarm must use user-set idleTimeMinutes (2), not constructor default (30)');
-});
-
-test('switching tabs ensures alarms for every background tab', async () => {
-  // Regression: previously relied on activeInfo.previousTabId which is a
-  // Firefox WebExtensions field and is always undefined in Chrome. So tabs
-  // that became background via tab-switching never got an alarm.
+test('auto-suspension schedules a single periodic alarm, not one per tab', async () => {
+  // Regression: the old model created one alarm per background tab, named by tab
+  // id. Chrome caps an extension at 500 alarms, so a larger session silently
+  // stopped getting timers past the cap — and every restored tab fired a
+  // chrome.alarms.get of its own.
   const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
   mock.setTabs([
-    {id: 1, active: false, url: 'https://a.com/'},
-    {id: 2, active: false, url: 'https://b.com/'},
-    {id: 3, active: true,  url: 'https://c.com/'},
+    {id: 1, active: false, url: 'https://a.com/', title: 'A'},
+    {id: 2, active: false, url: 'https://b.com/', title: 'B'},
+    {id: 3, active: true,  url: 'https://c.com/', title: 'C'},
   ]);
 
   const core = freshCore();
   core.setChrome(mock.chrome);
   await flush();
 
-  const initialNames = mock.calls.alarmsCreate.map((c) => c.name).sort();
-  assert.deepStrictEqual(initialNames, ['1', '2'],
-    'boot should create alarms for all background tabs');
+  assert.deepStrictEqual(mock.calls.alarmsCreate.map((c) => c.name), ['ts-autosuspend'],
+    'exactly one alarm should be scheduled, whatever the tab count');
+  assert.strictEqual(mock.calls.alarmsCreate[0].opts.periodInMinutes, 1);
+});
 
-  // User switches: tab 1 becomes active; tab 3 was just deactivated.
+test('the scheduler suspends a background tab that has been idle past the threshold', async () => {
+  const mock = makeChromeMock({
+    sync: { idleTimeMinutes: 2 },
+    onTabMessage: (id, msg) => {
+      if (msg.command === 'ts_get_tab_state') return {state: 'suspendable:auto'};
+      if (msg.command === 'ts_get_tab_scroll') return {scroll: {x: 0, y: 0}};
+      return undefined;
+    },
+  });
+  mock.setTabs([{
+    id: 5, active: false, url: 'https://idle.example.com/', title: 'Idle',
+    lastAccessed: Date.now() - 3 * 60000,
+  }]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+  mock.fire.onAlarm({name: 'ts-autosuspend'});
+  await flush();
+
+  const update = mock.calls.tabsUpdate.find((c) => c.id === 5 && c.info.url && c.info.url.startsWith('suspend.html'));
+  assert.ok(update, 'an idle background tab should be sent to the suspend page');
+});
+
+test('the scheduler leaves a recently used background tab alone', async () => {
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 30 } });
+  mock.setTabs([{
+    id: 6, active: false, url: 'https://busy.example.com/', title: 'Busy',
+    lastAccessed: Date.now() - 5 * 1000,
+  }]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+  mock.fire.onAlarm({name: 'ts-autosuspend'});
+  await flush();
+
+  assert.strictEqual(mock.calls.tabsUpdate.length, 0, 'a tab used seconds ago is not idle');
+});
+
+test('the scheduler caps how many tabs it suspends per tick', async () => {
+  const mock = makeChromeMock({
+    sync: { idleTimeMinutes: 2 },
+    onTabMessage: (id, msg) => {
+      if (msg.command === 'ts_get_tab_state') return {state: 'suspendable:auto'};
+      if (msg.command === 'ts_get_tab_scroll') return {scroll: {x: 0, y: 0}};
+      return undefined;
+    },
+  });
+
+  const tabs = [];
+  for (let id = 1; id <= 25; id++) {
+    tabs.push({
+      id, active: false, url: 'https://idle.example.com/' + id, title: 'Idle ' + id,
+      lastAccessed: Date.now() - 60 * 60000,
+    });
+  }
+  mock.setTabs(tabs);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+  mock.fire.onAlarm({name: 'ts-autosuspend'});
+  await flush(20);
+
+  const suspended = mock.calls.tabsUpdate.filter((c) => c.info.url && c.info.url.startsWith('suspend.html'));
+  assert.strictEqual(suspended.length, 10,
+    'only AUTOSUSPEND_PER_TICK tabs should be suspended per tick');
+});
+
+test('a tab without lastAccessed is not suspended on the first tick', async () => {
+  // Fallback path: without lastAccessed we start our own clock, so the tab only
+  // becomes eligible once it has been seen idle for the threshold.
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
+  mock.setTabs([{id: 8, active: false, url: 'https://nofield.example.com/', title: 'No field'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.calls.tabsUpdate.length = 0;
+  mock.fire.onAlarm({name: 'ts-autosuspend'});
+  await flush();
+
+  assert.strictEqual(mock.calls.tabsUpdate.length, 0, 'the fallback clock starts on the first tick');
+  assert.strictEqual(typeof core.fallbackIdleSince[8], 'number', 'the fallback clock should be recorded');
+});
+
+test('automatic suspension disabled schedules no alarm', async () => {
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 0 } });
+  mock.setTabs([{id: 1, active: false, url: 'https://a.com/', title: 'A'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  assert.deepStrictEqual(mock.calls.alarmsCreate, [],
+    'no scheduler alarm should exist when automatic suspension is off');
+});
+
+test('turning automatic suspension off clears the scheduler alarm', async () => {
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 5 } });
+  mock.setTabs([{id: 1, active: false, url: 'https://a.com/', title: 'A'}]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
+  mock.syncStorage.idleTimeMinutes = 0;
+  mock.fire.onStorageChanged({idleTimeMinutes: {newValue: 0, oldValue: 5}}, 'sync');
+  await flush();
+
+  assert.ok(mock.calls.alarmsClear.includes('ts-autosuspend'),
+    'the scheduler alarm should be cleared at 0 minutes');
+});
+
+test('switching tabs does not touch the alarms at all', async () => {
+  // The per-tab model re-checked and created timers on every switch. One alarm
+  // owns auto-suspension now, so activation must not add, remove or re-check any.
+  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
+  mock.setTabs([
+    {id: 1, active: false, url: 'https://a.com/', title: 'A'},
+    {id: 2, active: false, url: 'https://b.com/', title: 'B'},
+    {id: 3, active: true,  url: 'https://c.com/', title: 'C'},
+  ]);
+
+  const core = freshCore();
+  core.setChrome(mock.chrome);
+  await flush();
+
   mock.calls.alarmsCreate.length = 0;
   mock.calls.alarmsClear.length = 0;
+  mock.calls.alarmsGet.length = 0;
+
   mock.setTabs([
-    {id: 1, active: true,  url: 'https://a.com/'},
-    {id: 2, active: false, url: 'https://b.com/'},
-    {id: 3, active: false, url: 'https://c.com/'},
+    {id: 1, active: true,  url: 'https://a.com/', title: 'A'},
+    {id: 2, active: false, url: 'https://b.com/', title: 'B'},
+    {id: 3, active: false, url: 'https://c.com/', title: 'C'},
   ]);
-  mock.fire.onActivated({tabId: 1, windowId: 1});  // Chrome's onActivated has NO previousTabId
+  mock.fire.onActivated({tabId: 1, windowId: 1});
   await flush();
 
-  assert.ok(mock.calls.alarmsClear.includes('1'),
-    'new active tab\'s alarm should be cancelled');
-  const tab3 = mock.calls.alarmsCreate.find((c) => c.name === '3');
-  assert.ok(tab3, 'just-deactivated tab should get an alarm');
-  assert.strictEqual(tab3.opts.delayInMinutes, 2);
-  assert.strictEqual(mock.calls.alarmsCreate.find((c) => c.name === '2'), undefined,
-    'tab that already had an alarm should not be re-created');
+  assert.deepStrictEqual(mock.calls.alarmsCreate, [], 'switching must not create alarms');
+  assert.deepStrictEqual(mock.calls.alarmsClear, [], 'switching must not clear alarms');
+  assert.deepStrictEqual(mock.calls.alarmsGet, [], 'switching must not re-check alarms');
 });
 
-test('onTabRemoved cancels the tab\'s alarm and clears its tabState', async () => {
+test('onTabRemoved clears the tab\'s state and its idle clock', async () => {
   const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
   mock.setTabs([{id: 5, active: false, url: 'https://x.com/'}]);
 
@@ -89,25 +202,24 @@ test('onTabRemoved cancels the tab\'s alarm and clears its tabState', async () =
 
   core.tabState[5] = {state: 'suspendable:tab_whitelist'};
   core.saveTabScroll(5, {x: '1', y: '2'});
+  core.fallbackIdleSince[5] = Date.now();
 
-  mock.calls.alarmsClear.length = 0;
   mock.fire.onRemoved(5, {});
   await flush();
 
-  assert.ok(mock.calls.alarmsClear.includes('5'),
-    'closed tab\'s alarm should be cleared');
   assert.strictEqual(core.tabState[5], undefined,
     'closed tab\'s tabState entry should be dropped');
   assert.strictEqual(core.tabScrolls[5], undefined,
     'closed tab\'s scroll handoff entry should be dropped');
   assert.strictEqual(mock.sessionStorage.scroll_5, undefined,
     'closed tab\'s persisted scroll handoff should be removed');
+  assert.strictEqual(core.fallbackIdleSince[5], undefined,
+    'closed tab\'s idle clock should be dropped');
 });
 
-test('local-namespace storage writes do not rebuild alarms', async () => {
-  // Regression: storage.onChanged previously fired resetAutoSuspensionTimers
-  // for every local-namespace write (saveState fires constantly from popup
-  // actions), causing every tab's alarm to be cancelled and re-created.
+test('local-namespace storage writes do not touch the scheduler alarm', async () => {
+  // Regression: storage.onChanged previously rebuilt alarms for every
+  // local-namespace write (saveState fires constantly from popup actions).
   const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
   mock.setTabs([{id: 1, active: false, url: 'https://a.com/'}]);
 
@@ -115,15 +227,15 @@ test('local-namespace storage writes do not rebuild alarms', async () => {
   core.setChrome(mock.chrome);
   await flush();
 
-  const clearsBefore = mock.calls.alarmsClear.length;
+  const createsBefore = mock.calls.alarmsCreate.length;
   mock.fire.onStorageChanged({tabState: {newValue: {}, oldValue: {}}}, 'local');
   await flush();
 
-  assert.strictEqual(mock.calls.alarmsClear.length, clearsBefore,
-    'local-namespace storage changes must not trigger alarm rebuild');
+  assert.strictEqual(mock.calls.alarmsCreate.length, createsBefore,
+    'local-namespace storage changes must not touch alarms');
 });
 
-test('sync-namespace change to idleTimeMinutes rebuilds alarms', async () => {
+test('a sync change keeps exactly one scheduler alarm', async () => {
   const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
   mock.setTabs([{id: 1, active: false, url: 'https://a.com/'}]);
 
@@ -131,13 +243,14 @@ test('sync-namespace change to idleTimeMinutes rebuilds alarms', async () => {
   core.setChrome(mock.chrome);
   await flush();
 
-  const clearsBefore = mock.calls.alarmsClear.length;
   mock.syncStorage.idleTimeMinutes = 5;
   mock.fire.onStorageChanged({idleTimeMinutes: {newValue: 5, oldValue: 2}}, 'sync');
   await flush();
 
-  assert.ok(mock.calls.alarmsClear.length > clearsBefore,
-    'relevant sync key change should rebuild alarms');
+  assert.deepStrictEqual(mock.calls.alarmsCreate.map((c) => c.name), ['ts-autosuspend'],
+    'a settings change must not spawn per-tab alarms');
+  assert.deepStrictEqual(mock.calls.alarmsClear, [],
+    'the existing scheduler alarm should be left in place');
 });
 
 test('scroll restore handoff is persisted and survives a service-worker restart', async () => {
@@ -429,34 +542,6 @@ test('icon contract: every documented state maps to its intended icon', async ()
     assert.ok(last && last.path.endsWith(file),
       `state '${state}' should map to ${file}, got ${last && last.path}`);
   }
-});
-
-test('switching tabs does not re-scan every background tab for alarms', async () => {
-  // Regression: onTabActivated called initTimersForBackgroundTabs, which issued
-  // one chrome.alarms.get per background tab on every switch. At a few hundred
-  // tabs that alone made the browser feel stuck. Only the tab that just left the
-  // foreground needs a timer, and we know which one that was.
-  const mock = makeChromeMock({ sync: { idleTimeMinutes: 2 } });
-  const tabs = [];
-  for (let id = 1; id <= 40; id++) {
-    tabs.push({ id, active: false, url: 'https://example.com/' + id, title: 'Tab ' + id });
-  }
-  tabs.push({ id: 41, active: true, url: 'https://example.com/active', title: 'Active' });
-  mock.setTabs(tabs);
-
-  const core = freshCore();
-  core.setChrome(mock.chrome);
-  await flush();
-
-  mock.calls.alarmsGet.length = 0;
-  mock.calls.alarmsCreate.length = 0;
-  mock.fire.onActivated({ tabId: 2, windowId: 1 });
-  await flush();
-
-  assert.ok(mock.calls.alarmsGet.length <= 1,
-    `activation should only check the tab that left the foreground, checked ${mock.calls.alarmsGet.length}`);
-  assert.ok(mock.calls.alarmsCreate.some((c) => c.name === '41'),
-    'the tab that just went to the background should get its timer');
 });
 
 test('discarding inactive suspended tabs is paced', async (t) => {

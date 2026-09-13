@@ -129,10 +129,11 @@ function makeChromeMock(initial = {}) {
     alarms: {
       create: (name, opts) => {
         calls.alarmsCreate.push({name, opts});
-        alarms.set(name, {
-          name,
-          scheduledTime: Date.now() + opts.delayInMinutes * 60000,
-        });
+        const alarm = {name, ...opts};
+        if (typeof opts.delayInMinutes === 'number') {
+          alarm.scheduledTime = Date.now() + opts.delayInMinutes * 60000;
+        }
+        alarms.set(name, alarm);
       },
       clear: (name, cb) => {
         calls.alarmsClear.push(name);
@@ -143,6 +144,7 @@ function makeChromeMock(initial = {}) {
         calls.alarmsGet.push(name);
         setImmediate(() => cb(alarms.get(name)));
       },
+      getAll: (cb) => setImmediate(() => cb([...alarms.values()])),
       onAlarm: { addListener: hubs.onAlarm.addListener },
     },
     contextMenus: {
