@@ -7,6 +7,21 @@ before being merged.
 
 When you bump the version, add a section here in the same commit.
 
+## 2.7.2 — 2026-09-13 (branch: `suspend-ready-and-repair`)
+
+- The discard now waits for the placeholder to say it has rendered, instead of a fixed 1.5 s timer.
+  `suspend.js` sends `ts_suspend_page_ready` once it has applied the title and favicon, and the tab
+  is discarded on that. A fixed grace was unreliable exactly when it mattered most: suspending a
+  large batch loads many placeholders at once, and any that took longer than the timer were
+  discarded still showing the default `Suspended` title and the power icon. The timeout is now only
+  the fallback for a page that never reports (5 s), so a renderer is still reclaimed either way.
+- Added **Repair placeholder icons** to the dashboard. Tabs discarded before the handshake existed
+  keep the default title and power icon for good, because Chrome records a tab's favicon at discard
+  time. This reloads each affected placeholder once so it renders its site icon, then the normal
+  discard reclaims it. It skips tabs already carrying the dimmed icon (a `data:` url) and the tab
+  you are looking at, runs in paced batches, and reports progress. One-time fixup: only tabs
+  suspended before 2.7.1 need it.
+
 ## 2.7.1 — 2026-09-13 (branch: `discard-render-grace`)
 
 - A suspended placeholder is no longer discarded the instant its URL commits. The discard is what
