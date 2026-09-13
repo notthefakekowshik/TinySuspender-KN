@@ -117,11 +117,25 @@ async function freePort() {
 
 // -------------------------------------------------------- test page server ---
 
+// A real favicon for the test pages, so Chrome's favicon store has something to
+// hand back through /_favicon/ — which is where the suspend page reads the icon
+// it dims. 16x16 solid PNG, built here so the lab stays file-free.
+const FAVICON_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGO4oxFFEmIY1TCqYfhqAACUeF4Q+VWXnAAAAABJRU5ErkJggg==',
+  'base64');
+
 function startServer() {
   const sockets = new Set();
 
   const server = http.createServer((request, response) => {
     const [pathPart, queryPart] = request.url.split('?');
+
+    if (pathPart === '/favicon.ico') {
+      response.writeHead(200, {'content-type': 'image/png', 'cache-control': 'no-cache'});
+      response.end(FAVICON_PNG);
+      return;
+    }
+
     const name = (pathPart.replace(/^\//, '') || 'static').replace(/[^a-z]/gi, '');
     const query = new URLSearchParams(queryPart || '');
     const file = path.join(PAGES_DIR, `${name}.html`);
@@ -1205,7 +1219,238 @@ async function bfcacheOnly() {
   }
 }
 
-if (argv.includes('--bfcache-only')) {
+// What a suspended tab ends up showing in the tab strip: the site's title and
+// dimmed favicon, or the placeholder's default "Suspended" and the extension's
+// power icon. Separates the two things that can go wrong — the favicon lookup
+// itself, and discarding the placeholder before it has rendered.
+const RESTART_TABS = 25;
+
+async function renderOnly() {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tiny-suspender-lab-'));
+  const server = await startServer();
+  const browser = await launchBrowser(userDataDir);
+  activeBrowser = browser.proc;
+  activeProfile = userDataDir;
+
+  let cdp = null;
+
+  try {
+    const version = await (await fetch(`http://127.0.0.1:${browser.port}/json/version`)).json();
+    cdp = await Cdp.connect(version.webSocketDebuggerUrl);
+
+    const worker = await findServiceWorker(cdp);
+    const swSession = await cdp.attach(worker.targetId);
+
+    const control = await openTab(cdp, swSession, `${BASE_A}/static?tag=render-control`);
+
+    // --- 1. does the favicon lookup work at all? ----------------------------
+    console.log('');
+    console.log('Probe 1 — the suspend page, with discarding disabled: does it render the site icon?');
+
+    const pageUrl = `${BASE_A}/static?tag=render-a`;
+    const page = await openTab(cdp, swSession, pageUrl);
+    await sleep(1500);
+
+    const liveIcon = await cdp.evaluate(swSession,
+      `(async () => { const t = await chrome.tabs.get(${page.tabId}); return String(t.favIconUrl || ''); })()`);
+    record('render', 'favIconUrl chrome reports for the live page', liveIcon ? liveIcon.slice(0, 60) : '(none)');
+
+    await activate(cdp, swSession, control.tabId);
+    await cdp.evaluate(swSession, PATCH_DISCARD);
+    await cdp.evaluate(swSession, `(async () => { ts.suspendTab(${page.tabId}); return true; })()`);
+    await sleep(2500);
+
+    const placeholder = (await cdp.targets()).find((target) => target.url.includes('suspend.html')
+      && target.url.includes(encodeURIComponent(pageUrl)));
+
+    if (!placeholder) throw new Error('the tab never landed on the suspend page');
+
+    const placeholderSession = await cdp.attach(placeholder.targetId);
+    const rendered = await cdp.evaluate(placeholderSession, `(async () => {
+      const link = document.querySelector('link[rel="shortcut icon"]');
+      const pageIcon = document.querySelector('.title .icon img');
+      const favicon = new URL(chrome.runtime.getURL('/_favicon/'));
+      favicon.searchParams.set('pageUrl', new URL(location.href).searchParams.get('url'));
+      favicon.searchParams.set('size', '32');
+
+      let status = 'not attempted';
+      let bytes = 0;
+      try {
+        const response = await fetch(favicon.toString());
+        status = String(response.status);
+        bytes = (await response.blob()).size;
+      }
+      catch (error) {
+        status = 'threw: ' + error.message;
+      }
+
+      return {
+        title: document.title,
+        linkHref: link ? link.href.slice(0, 24) : '(no link element)',
+        pageIcon: pageIcon ? pageIcon.src.slice(0, 40) : '(none)',
+        faviconStatus: status,
+        faviconBytes: bytes,
+      };
+    })()`);
+
+    record('render', 'placeholder document.title', rendered.title);
+    record('render', '_favicon fetch from the placeholder', `${rendered.faviconStatus}, ${rendered.faviconBytes} bytes`);
+    record('render', 'tab icon <link> applied by suspend.js', rendered.linkHref);
+    record('render', 'verdict — favicon lookup', rendered.linkHref.startsWith('data:')
+      ? 'WORKS (dimmed icon applied)'
+      : 'BROKEN (no icon applied)');
+
+    await cdp.evaluate(swSession, RESTORE_DISCARD);
+    await closeAllExcept(cdp, swSession, control.tabId);
+
+    // --- 2. a normal suspension, discard and all ----------------------------
+    console.log('');
+    console.log('Probe 2 — a normal suspension: what does the tab show once it is discarded?');
+
+    const pageUrlB = `${BASE_A}/static?tag=render-b`;
+    const pageB = await openTab(cdp, swSession, pageUrlB);
+    await sleep(1500);
+    const liveTitle = await tabTitle(cdp, swSession, pageB.tabId);
+
+    await activate(cdp, swSession, control.tabId);
+    await cdp.evaluate(swSession, `(async () => { ts.suspendTab(${pageB.tabId}); return true; })()`);
+    await sleep(5000);
+
+    const afterSuspend = await suspendedTabInfo(cdp, swSession, pageUrlB);
+    record('render', 'title while live', String(liveTitle));
+    record('render', 'suspended tab: discarded', String(afterSuspend.discarded));
+    record('render', 'suspended tab: title', String(afterSuspend.title));
+    record('render', 'suspended tab: favIconUrl', String(afterSuspend.favIconUrl).slice(0, 24));
+    record('render', 'verdict — fresh suspension', afterSuspend.title === liveTitle
+      ? 'keeps the site title'
+      : `falls back to "${afterSuspend.title}"`);
+
+    await closeAllExcept(cdp, swSession, control.tabId);
+
+    // --- 3. the restart path ------------------------------------------------
+    // A restart reloads every placeholder at once and starts the service
+    // worker, which sweeps them. One tab reloads too fast to lose the race, so
+    // this reproduces the contention with a batch.
+    console.log('');
+    console.log(`Probe 3 — ${RESTART_TABS} placeholders reloaded at once, then swept like a browser restart.`);
+
+    const bulkTag = 'bulk';
+    await cdp.evaluate(swSession, `(async () => {
+      for (let index = 0; index < ${RESTART_TABS}; index++) {
+        await chrome.tabs.create({url: '${BASE_A}/static?tag=${bulkTag}-' + index, active: false});
+      }
+      return true;
+    })()`);
+
+    await waitForLoaded(cdp, swSession, bulkTag, RESTART_TABS);
+
+    await cdp.evaluate(swSession, `(async () => {
+      const tabs = await chrome.tabs.query({});
+      tabs.filter((tab) => tab.url && tab.url.includes('tag=${bulkTag}-'))
+        .forEach((tab) => ts.suspendTab(tab.id));
+      return true;
+    })()`);
+
+    await sleep(8000);
+
+    const beforeRestart = await suspendedTitles(cdp, swSession, bulkTag);
+    record('render', `${RESTART_TABS} tabs suspended normally`,
+      `${beforeRestart.rendered} of ${beforeRestart.total} show the site title`);
+
+    // The restart itself: every placeholder reloads, and the worker starts and
+    // sweeps. Sweeping as soon as the first tab is loading is what setChrome
+    // does — it does not wait for any of them to render.
+    await cdp.evaluate(swSession, `(async () => {
+      const tabs = await chrome.tabs.query({});
+      tabs.filter((tab) => tab.url && tab.url.includes('suspend.html'))
+        .forEach((tab) => chrome.tabs.reload(tab.id));
+      return true;
+    })()`);
+
+    await cdp.evaluate(swSession, `(async () => { ts.discardInactiveSuspendedTabs(); return true; })()`);
+    await sleep(8000);
+
+    const afterRestart = await suspendedTitles(cdp, swSession, bulkTag);
+    record('render', 'after the startup sweep',
+      `${afterRestart.rendered} of ${afterRestart.total} show the site title`);
+    record('render', 'after the startup sweep: still discarded',
+      `${afterRestart.discarded} of ${afterRestart.total}`);
+    record('render', 'verdict — startup sweep',
+      afterRestart.rendered === afterRestart.total
+        ? 'keeps the site title'
+        : `${afterRestart.total - afterRestart.rendered} tab(s) fell back to the placeholder default`);
+
+    console.log('');
+    console.log('| Measurement | Value |');
+    console.log('| --- | --- |');
+    measurements.forEach((entry) => console.log(`| ${entry.what} | ${entry.value} |`));
+  }
+  finally {
+    if (cdp && !KEEP) cdp.close();
+    if (!KEEP) {
+      browser.proc.kill('SIGTERM');
+      await sleep(500);
+      fs.rmSync(userDataDir, {recursive: true, force: true, maxRetries: 5, retryDelay: 200});
+    }
+    else {
+      console.log('');
+      console.log(`Browser kept open (pid ${browser.proc.pid}), profile: ${userDataDir}`);
+    }
+    server.close();
+  }
+}
+
+// How many suspended placeholders actually show the title of the page they
+// carry, rather than the static page's own "Suspended".
+async function suspendedTitles(cdp, swSession, tag) {
+  return cdp.evaluate(swSession, `(async () => {
+    const tabs = (await chrome.tabs.query({}))
+      .filter((tab) => tab.url && tab.url.includes('suspend.html') && tab.url.includes('tag%3D${tag}-'));
+
+    let rendered = 0;
+    let discarded = 0;
+    tabs.forEach((tab) => {
+      const wanted = new URL(tab.url).searchParams.get('title');
+      if (wanted && tab.title === wanted) rendered++;
+      if (tab.discarded) discarded++;
+    });
+
+    return {total: tabs.length, rendered: rendered, discarded: discarded};
+  })()`);
+}
+
+async function waitForLoaded(cdp, swSession, tag, expected) {
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const ready = await cdp.evaluate(swSession, `(async () => (await chrome.tabs.query({}))
+      .filter((tab) => tab.url && tab.url.includes('tag=${tag}-') && tab.status === 'complete').length)()`);
+    if (ready >= expected) return;
+    await sleep(250);
+  }
+  throw new Error(`only some ${tag} tabs finished loading`);
+}
+
+// Looks the placeholder up by the page it carries: discarding replaces the tab
+// id, so it cannot be held across a discard.
+async function suspendedTabInfo(cdp, swSession, pageUrl) {
+  const marker = encodeURIComponent(pageUrl);
+  return cdp.evaluate(swSession, `(async () => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((candidate) => candidate.url
+      && candidate.url.includes('suspend.html')
+      && candidate.url.includes(${JSON.stringify(marker)}));
+    if (!tab) return null;
+    return {id: tab.id, discarded: !!tab.discarded, title: tab.title, favIconUrl: tab.favIconUrl || '(none)'};
+  })()`);
+}
+
+if (argv.includes('--render-only')) {
+  renderOnly().catch((error) => {
+    console.error('');
+    console.error('lab failed: ' + error.message);
+    process.exit(1);
+  });
+}
+else if (argv.includes('--bfcache-only')) {
   bfcacheOnly().catch((error) => {
     console.error('');
     console.error('lab failed: ' + error.message);
