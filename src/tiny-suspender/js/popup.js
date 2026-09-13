@@ -23,6 +23,7 @@ class TinySuspenderPopup {
     document.querySelector('.restore-btn').onclick = this.onRestore.bind(this);
     document.querySelector('.restore-all-btn').onclick = this.onRestoreAll.bind(this);
     document.querySelector('.restore-all-windows-btn').onclick = this.onRestoreAllWindows.bind(this);
+    document.querySelector('.adopt-orphans-btn').onclick = this.onAdoptOrphans.bind(this);
 
     document.querySelector('.disable-tab-auto-suspend-btn').onclick = this.onDisableAutoSuspensionThisTab.bind(this);
     document.querySelector('.enable-tab-auto-suspend-btn').onclick = this.onEnableAutoSuspensionThisTab.bind(this);
@@ -298,6 +299,27 @@ class TinySuspenderPopup {
     });
   }
 
+  checkOrphanedTabs() {
+    this.chrome.runtime.sendMessage({command: "ts_count_orphaned_suspended_tabs"}, (response) => {
+      let count = (response && response.count) || 0;
+      if (!count) return;
+
+      let button = document.querySelector('.adopt-orphans-btn');
+      button.textContent = 'Adopt ' + count + ' suspended tab(s) from a previous install';
+      button.style.display = 'block';
+    });
+  }
+
+  onAdoptOrphans(e) {
+    this.log('onAdoptOrphans');
+
+    this.chrome.runtime.sendMessage({command: "ts_adopt_orphaned_suspended_tabs"}, () => {
+      setTimeout(() => {
+        window.close();
+      }, 100);
+    });
+  }
+
   onDisableAutoSuspensionThisTab(e) {
     this.log('onDisableAutoSuspensionThisTab');
 
@@ -428,6 +450,7 @@ if (this.chrome) {
   tsp.setChrome(chrome);
   tsp.initEventHandlers();
   tsp.initQuickSettings();
+  tsp.checkOrphanedTabs();
   setTimeout(() => {
     tsp.getTabState();
   }, 200);

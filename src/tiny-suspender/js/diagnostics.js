@@ -16,6 +16,18 @@ let setRows = (tableId, rows) => {
 
 let suspendPagePrefix = 'chrome-extension://' + chrome.runtime.id + '/suspend.html';
 
+// Suspend pages owned by any install, so tabs left behind by a previous install
+// are counted too instead of looking like ordinary extension pages.
+let isSuspendPageUrl = (url) => {
+  try {
+    let parsed = new URL(url);
+    return parsed.protocol === 'chrome-extension:' && parsed.pathname === '/suspend.html';
+  }
+  catch (error) {
+    return false;
+  }
+};
+
 let loadEnvironment = () => {
   setRows('environment', [
     ['Extension version', chrome.runtime.getManifest().version],
@@ -47,14 +59,17 @@ let loadState = () => {
     let names = alarms.map((alarm) => alarm.name).sort();
 
     chrome.tabs.query({}, (tabs) => {
-      let suspended = tabs.filter((tab) => (tab.url || '').startsWith(suspendPagePrefix));
+      let suspended = tabs.filter((tab) => isSuspendPageUrl(tab.url));
+      let own = tabs.filter((tab) => (tab.url || '').startsWith(suspendPagePrefix));
+      let orphaned = suspended.filter((tab) => !(tab.url || '').startsWith(suspendPagePrefix));
       let discarded = tabs.filter((tab) => tab.discarded);
 
       setRows('state', [
         ['Active alarms', alarms.length + ' (Chrome caps an extension at 500)'],
         ['Alarm names', names.length ? names.join(', ') : '(none)'],
         ['Tabs', String(tabs.length)],
-        ['Suspended by Tiny Suspender', String(suspended.length)],
+        ['Suspended by Tiny Suspender', String(own.length)],
+        ['Suspended by another install (orphaned)', String(orphaned.length)],
         ['Suspended by native tab discard', String(discarded.length)],
         ['Live (not suspended)', String(tabs.length - suspended.length - discarded.length)]
       ]);

@@ -88,8 +88,40 @@
 
       <div class="separator"></div>
 
+      <h2>Migrating From Another Install</h2>
+      <p>Suspended tabs live inside the tab itself, and removing an extension closes them. Export them here before switching installs, then import them into the new install to keep them suspended.</p>
+
+      <div class="fieldset">
+        <button type="button" id="export_tabs">Export Suspended Tabs</button>
+        <button type="button" id="adopt_tabs">Adopt Suspended Tabs From Another Install</button>
+        <small id="migration_message"></small>
+      </div>
+
+      <div class="fieldset">
+        <label>Import suspended tabs (paste suspend urls, or choose an exported JSON file):</label>
+        <textarea id="import_tabs_text" placeholder="chrome-extension://.../suspend.html?url=..."></textarea>
+        <input type="file" id="import_tabs_file" accept=".json,application/json">
+        <button type="button" id="import_tabs">Import Suspended Tabs</button>
+      </div>
+
+      <div class="fieldset checkbox">
+        <label><input type="checkbox" name="auto_adopt" value="enabled"> Adopt suspended tabs from a previous install automatically on startup</label>
+      </div>
+
+      <div class="separator"></div>
+
+      <h2>Settings Backup</h2>
+      <div class="fieldset">
+        <button type="button" id="export_settings">Export Settings</button>
+        <input type="file" id="import_settings_file" accept=".json,application/json">
+        <button type="button" id="import_settings">Import Settings</button>
+        <small id="settings_backup_message"></small>
+      </div>
+
+      <div class="separator"></div>
+
       <h2>Uninstalling Extension</h2>
-      <p>Warning: uninstalling this extension will close ALL currently suspended tabs, unless Native Tab Discard API is enabled. Make sure to restore all suspended tabs before uninstalling this extension.</p>
+      <p>Warning: uninstalling this extension will close ALL currently suspended tabs, unless Native Tab Discard API is enabled. Export your suspended tabs above (or restore them) before uninstalling this extension.</p>
 
       <div class="separator"></div>
 
